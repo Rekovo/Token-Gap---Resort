@@ -114,4 +114,8 @@ InitTestScene*.unity*
 *.db-shm
 *.sqlite
 *.sqlite3
+<<<<<<< HEAD
 local.config
+=======
+local.config
+>>>>>>> d040775 (Database setup)
