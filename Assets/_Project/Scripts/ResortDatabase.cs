@@ -148,6 +148,7 @@ public class ResortDatabase : IDisposable
     public int GetSchemaVersion() => db.ExecuteScalar<int>("PRAGMA user_version;");
     public bool ForeignKeysEnabled() => db.ExecuteScalar<int>("PRAGMA foreign_keys;") == 1;
 
+
     public string GetPlayerSummary(string playerId)
 {
     var player = db.Find<PlayerRecord>(playerId);

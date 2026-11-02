@@ -17,7 +17,8 @@ public class ResortDatabaseTest : MonoBehaviour
                 + "\n" + database.GetPlayerSummary(playerId);
         Debug.Log(summary);
     }
-    /*                  Remove komentar ha valami kell
+    //                  Remove komentar ha valami kell
+    /*
     private void OnGUI()
     {
         GUI.skin.label.fontSize = 36;
