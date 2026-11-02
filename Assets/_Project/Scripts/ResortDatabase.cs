@@ -136,17 +136,18 @@ public class ResortDatabase : IDisposable
                        playerId);
         });
     }
+    
+    public int GetCurrencyAmount(string playerId, string currencyCode)
+    {
+        return db.ExecuteScalar<int>(
+            "SELECT amount FROM CURRENCY_BALANCE WHERE player_id = ? AND currency_code = ?",
+            playerId, currencyCode
+        );
+    }
 
     public int GetSchemaVersion() => db.ExecuteScalar<int>("PRAGMA user_version;");
     public bool ForeignKeysEnabled() => db.ExecuteScalar<int>("PRAGMA foreign_keys;") == 1;
-    public int GetCurrencyAmount(string playerId, string currencyCode)
-    {
-    return db.ExecuteScalar<int>(
-        "SELECT amount FROM CURRENCY_BALANCE WHERE player_id = ? AND currency_code = ?",
-        playerId,
-        currencyCode
-    );
-    }
+
 
     public string GetPlayerSummary(string playerId)
 {
