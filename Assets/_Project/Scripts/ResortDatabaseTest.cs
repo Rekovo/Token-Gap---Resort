@@ -17,12 +17,13 @@ public class ResortDatabaseTest : MonoBehaviour
                 + "\n" + database.GetPlayerSummary(playerId);
         Debug.Log(summary);
     }
-
+    //                  Remove komentar ha valami kell
+    /*
     private void OnGUI()
     {
         GUI.skin.label.fontSize = 36;
         GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40), summary);
     }
-
+    */
     private void OnDestroy() => database?.Dispose();
 }
