@@ -19,7 +19,7 @@ public class TopBarDatabaseUI : MonoBehaviour
     {
         int coins = database.GetCurrencyAmount(playerId, "COINS");
 
-        moneyText.text = "Coins: " + coins.ToString();
+        moneyText.text = coins.ToString();
     }
 
     private void OnDestroy()
