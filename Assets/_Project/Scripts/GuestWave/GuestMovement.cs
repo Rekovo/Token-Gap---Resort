@@ -1,53 +1,235 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 
-public class GuestMovement : MonoBehaviour
+public sealed class GuestMovement : MonoBehaviour
 {
-    [Header("Movement Settings")]
-    [SerializeField] private float moveSpeed = 2f;
-    [SerializeField] private float stoppingDistance = 0.1f;
-
-    private GuestWaveController waveController;
-    private Vector3 destination;
-    private bool hasDestination;
-
-    // Called by the spawner to assign a destination
-    public void SetDestination(
-        Vector3 newDestination,
-        GuestWaveController controller)
+    private sealed class Visit
     {
-        destination = newDestination;
+        public ResortNeed Need;
+        public int UnitIndex;
+        public Vector3 Destination;
+        public bool IsServed;
+    }
+
+    [Header("Movement")]
+    [SerializeField, Min(0.1f)] private float moveSpeed = 2f;
+    [SerializeField, Min(0f)] private float stoppingDistance = 0.1f;
+
+    [Header("Visual")]
+    [SerializeField] private Transform visualPrefab;
+    [SerializeField] private Vector3 visualLocalPosition;
+    [SerializeField] private Vector3 visualLocalEulerAngles;
+    [SerializeField, Min(0.01f)] private float visualScale = 1f;
+
+    public event Action ReturnedToEntrance;
+    public event Action StartedWalking;
+    public bool IsAtEntrance { get; private set; }
+
+    private readonly Queue<Visit> queuedVisits = new Queue<Visit>();
+    private readonly int[] servedUnits = new int[Enum.GetValues(typeof(ResortNeed)).Length];
+    private GuestWaveController waveController;
+    private Visit currentVisit;
+    private Vector3 entrancePosition;
+    private Vector3 destination;
+    private float groundY;
+    private bool isMoving;
+    private bool waitingForService;
+    private bool isReturning;
+    private bool hasStartedWalking;
+    private float visitDisplayTimer;
+
+    private void Awake()
+    {
+        if (visualPrefab == null)
+            return;
+
+        Transform visual = Instantiate(visualPrefab, transform, false);
+        visual.name = "GuestVisual";
+        // Keep the FBX root's authored transform. Imported models often use a
+        // non-unit scale/orientation to match their source units and axes.
+        visual.localPosition += visualLocalPosition;
+        visual.localRotation *= Quaternion.Euler(visualLocalEulerAngles);
+        visual.localScale = Vector3.Scale(visual.localScale, Vector3.one * visualScale);
+        AlignVisualFeetToRoot(visual);
+        // Guests remain hidden inside the ship until their first visit begins.
+        SetVisualVisible(false);
+    }
+
+    public void BeginWave(Vector3 returnPosition, GuestWaveController controller)
+    {
+        if (controller == null)
+            throw new ArgumentNullException(nameof(controller));
+
+        queuedVisits.Clear();
+        Array.Clear(servedUnits, 0, servedUnits.Length);
+        currentVisit = null;
+        entrancePosition = returnPosition;
+        groundY = transform.position.y;
         waveController = controller;
-        hasDestination = true;
+        waveController.OnNeedProgressChanged += HandleNeedProgressChanged;
+        isMoving = false;
+        waitingForService = false;
+        isReturning = false;
+        IsAtEntrance = false;
+        hasStartedWalking = false;
+    }
+
+    public void QueueVisit(ResortNeed need, int unitIndex, Vector3 visitPoint)
+    {
+        if (IsAtEntrance || isReturning || waveController == null)
+            return;
+
+        if (!hasStartedWalking)
+        {
+            hasStartedWalking = true;
+            SetVisualVisible(true);
+            StartedWalking?.Invoke();
+        }
+
+        Visit visit = new Visit
+        {
+            Need = need,
+            UnitIndex = unitIndex,
+            Destination = visitPoint,
+            IsServed = unitIndex < servedUnits[(int)need]
+        };
+        if (currentVisit == null && !isMoving && !waitingForService)
+            StartVisit(visit);
+        else
+            queuedVisits.Enqueue(visit);
+    }
+
+    public void ReturnToEntrance()
+    {
+        if (IsAtEntrance || isReturning)
+            return;
+
+        queuedVisits.Clear();
+        currentVisit = null;
+        isMoving = false;
+        waitingForService = false;
+        isReturning = true;
+        SetDestination(entrancePosition);
     }
 
     private void Update()
     {
-        // Don't move without a destination or controller
-        if (!hasDestination || waveController == null)
+        if (IsAtEntrance || waveController == null)
             return;
 
-        // Only move while the wave is active
-        if (waveController.CurrentState != GuestWaveState.Active)
-            return;
+        if (waveController.CurrentState == GuestWaveState.Paused) return;
 
-        // Move towards the destination
-        transform.position = Vector3.MoveTowards(
-            transform.position,
-            destination,
-            moveSpeed * Time.deltaTime
-        );
-
-        // Check whether the guest reached the destination
-        float distance = Vector3.Distance(
-            transform.position,
-            destination
-        );
-
-        if (distance <= stoppingDistance)
+        if (waitingForService)
         {
-            hasDestination = false;
-
-            Debug.Log(gameObject.name + " reached its destination.");
+            if (currentVisit != null && currentVisit.IsServed) StartNextVisit();
+            return;
         }
+        if (!isMoving) return;
+
+        Vector3 previousPosition = transform.position;
+        Vector3 nextPosition = Vector3.MoveTowards(previousPosition, destination, moveSpeed * Time.deltaTime);
+        nextPosition.y = groundY;
+        transform.position = nextPosition;
+
+        Vector3 movement = transform.position - previousPosition;
+        movement.y = 0f;
+        if (movement.sqrMagnitude > 0.0001f)
+            transform.rotation = Quaternion.LookRotation(movement, Vector3.up);
+
+        if ((transform.position - destination).sqrMagnitude > stoppingDistance * stoppingDistance)
+            return;
+
+        isMoving = false;
+        if (isReturning)
+        {
+            isReturning = false;
+            IsAtEntrance = true;
+            SetVisualVisible(false);
+            ReturnedToEntrance?.Invoke();
+        }
+        else
+        {
+            waitingForService = true;
+        }
+    }
+
+    private void HandleNeedProgressChanged(ResortNeed need, int served, int total)
+    {
+        servedUnits[(int)need] = served;
+        if (currentVisit != null && currentVisit.Need == need && currentVisit.UnitIndex < served)
+            currentVisit.IsServed = true;
+        foreach (Visit visit in queuedVisits)
+            if (visit.Need == need && visit.UnitIndex < served)
+                visit.IsServed = true;
+        if (waitingForService && currentVisit != null && currentVisit.IsServed)
+            StartNextVisit();
+    }
+
+    private void StartVisit(Visit visit)
+    {
+        currentVisit = visit;
+        waitingForService = false;
+        isMoving = true;
+        SetDestination(visit.Destination);
+    }
+
+    private void StartNextVisit()
+    {
+        currentVisit = null;
+        waitingForService = false;
+        if (queuedVisits.Count > 0)
+            StartVisit(queuedVisits.Dequeue());
+    }
+
+    private void SetDestination(Vector3 point)
+    {
+        point.y = groundY;
+        destination = point;
+        isMoving = true;
+        if ((destination - transform.position).sqrMagnitude <= stoppingDistance * stoppingDistance)
+        {
+            isMoving = false;
+            if (isReturning)
+            {
+                isReturning = false;
+                IsAtEntrance = true;
+                SetVisualVisible(false);
+                ReturnedToEntrance?.Invoke();
+            }
+            else if (currentVisit != null && currentVisit.IsServed)
+            {
+                StartNextVisit();
+            }
+            else
+            {
+                waitingForService = true;
+            }
+        }
+    }
+
+    private void AlignVisualFeetToRoot(Transform visual)
+    {
+        Renderer[] renderers = visual.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+            return;
+
+        float lowestPoint = float.PositiveInfinity;
+        foreach (Renderer renderer in renderers)
+            lowestPoint = Mathf.Min(lowestPoint, renderer.bounds.min.y);
+
+        visual.position += Vector3.up * (transform.position.y - lowestPoint);
+    }
+
+    private void SetVisualVisible(bool visible)
+    {
+        foreach (Renderer renderer in GetComponentsInChildren<Renderer>(true))
+            renderer.enabled = visible;
+    }
+
+    private void OnDestroy()
+    {
+        if (waveController != null)
+            waveController.OnNeedProgressChanged -= HandleNeedProgressChanged;
     }
 }
