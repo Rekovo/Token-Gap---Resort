@@ -3,150 +3,203 @@ using UnityEngine;
 
 public class GuestWaveController : MonoBehaviour
 {
-    // Current wave state
-    public GuestWaveState CurrentState { get; private set; }
-        = GuestWaveState.Ready;
+    [Header("Prototype data assets")]
+    [SerializeField] private WaveBalanceConfig balanceConfig;
+    [SerializeField] private WaveDefinition waveDefinition;
+    [SerializeField, Min(0f)] private float guestReturnTimeout = 10f;
+    [SerializeField] private string playerId = "test-player-001";
 
-    // Events for other gameplay systems
+    public GuestWaveState CurrentState { get; private set; } = GuestWaveState.Ready;
     public event Action<int> OnWaveStarted;
     public event Action OnWaveCompleted;
-
-    // Guest tracking
+    public event Action<float, int, int> OnWaveResult;
+    public event Action<GuestWaveState> OnWaveStateChanged;
+    public event Action<int, int> OnGuestCountChanged;
+    public event Action<float> OnArrivalProgressChanged;
+    public event Action<ResortNeed, int, int> OnNeedProgressChanged;
+    public event Action<ResortNeed, WaveNeedStatus, int> OnNeedStatusChanged;
     public int TotalGuests { get; private set; }
     public int GuestsArrived { get; private set; }
     public int GuestsLeft { get; private set; }
+    public float Elapsed => simulation != null ? simulation.Elapsed : 0f;
+    public WaveDefinition CurrentWaveDefinition => waveDefinition;
+    public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
+    public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
 
-    private bool arrivalsFinished;
+    private float returnWaitTimer;
+    private WaveSimulation simulation;
+    private ResortDatabase database;
+    private bool simulationFinished;
+    private float finalSatisfaction;
+    private int finalRating;
+    private int finalCoins;
+    private float nextDrainDiagnosticTime;
 
-    // Changes the wave state
-    private void ChangeState(GuestWaveState newState)
+    private void Awake()
     {
-        CurrentState = newState;
-
-        Debug.Log("Guest Wave State: " + CurrentState);
+        database = new ResortDatabase();
+        database.CreateNewPlayer(playerId);
+        TotalGuests = waveDefinition != null ? waveDefinition.VisualGuestCount : 0;
     }
 
-    // Called when the player presses Start Wave
+    private void Update()
+    {
+        if (CurrentState == GuestWaveState.Active && simulation != null)
+        {
+            simulation.Tick(Time.deltaTime);
+            if (simulation.IsActive && simulation.Elapsed >= WaveDuration && simulation.Elapsed >= nextDrainDiagnosticTime)
+            {
+                nextDrainDiagnosticTime = simulation.Elapsed + 10f;
+                Debug.Log($"Wave drain at {simulation.Elapsed:F0}s: {simulation.DrainStatus}; guests returned {GuestsLeft}/{TotalGuests}.", this);
+            }
+        }
+        if (CurrentState == GuestWaveState.Active && simulationFinished)
+        {
+        returnWaitTimer += Time.deltaTime;
+        if (returnWaitTimer >= guestReturnTimeout) FinalizeWave();
+        }
+    }
+
     public void StartWaveFromButton()
     {
-        if (CurrentState != GuestWaveState.Ready)
-            return;
-
-        StartWave(5);
+        if (waveDefinition != null) StartWave(waveDefinition.VisualGuestCount);
+        else Debug.LogError("GuestWaveController requires a WaveDefinition asset.", this);
     }
 
-    // Starts a new wave
     public void StartWave(int guestCount)
     {
-        if (CurrentState != GuestWaveState.Ready || guestCount <= 0)
+        if (CurrentState != GuestWaveState.Ready || guestCount <= 0) return;
+        if (balanceConfig == null || waveDefinition == null)
+        {
+            Debug.LogError("Assign both WaveBalanceConfig and WaveDefinition assets before starting a wave.", this);
             return;
+        }
+
+        simulation = new WaveSimulation(balanceConfig);
+        simulation.NeedProgressChanged += (need, served, total) => OnNeedProgressChanged?.Invoke(need, served, total);
+        simulation.NeedStatusChanged += (need, status, queue) => OnNeedStatusChanged?.Invoke(need, status, queue);
+        simulation.ArrivalProgressChanged += progress => OnArrivalProgressChanged?.Invoke(progress);
+        simulation.Completed += HandleSimulationCompleted;
+        simulation.Start(waveDefinition);
+        if (database != null && waveDefinition.Demands != null)
+        {
+            foreach (var demand in waveDefinition.Demands)
+            {
+                string key = BuildingKeyFor(demand.need);
+                BuildingStateRecord state = database.GetBuildingState(playerId, key);
+                if (state != null) simulation.SetBuilding(demand.need, Mathf.Max(1, state.level), state.workers_assigned > 0);
+            }
+        }
 
         TotalGuests = guestCount;
         GuestsArrived = 0;
         GuestsLeft = 0;
-        arrivalsFinished = false;
-
+        simulationFinished = false;
+        nextDrainDiagnosticTime = balanceConfig.WaveTimer;
         ChangeState(GuestWaveState.Active);
-
-        Debug.Log("Wave started with " + TotalGuests + " guests.");
-
-        // Notify other systems that a wave has started
         OnWaveStarted?.Invoke(TotalGuests);
+        OnGuestCountChanged?.Invoke(GuestsArrived, TotalGuests);
     }
 
-    // Called when a guest arrives at the resort
+    public void SetBuilding(ResortNeed need, int level, bool staffed)
+    {
+        simulation?.SetBuilding(need, level, staffed);
+    }
+
+    public bool TryBoost(ResortNeed need)
+    {
+        if (database == null || simulation == null || balanceConfig == null) return false;
+        int energy = database.GetCurrencyAmount(playerId, "ENERGY");
+        if (!simulation.CanBoost(need, energy)) return false;
+        if (!database.TrySpendCurrency(playerId, "ENERGY", balanceConfig.EnergyCostPerBoost, "WAVE_ENERGY_BOOST")) return false;
+        return simulation.TryBoost(need, energy);
+    }
+
+
     public void GuestArrived()
     {
-        if (CurrentState != GuestWaveState.Active)
-            return;
-
-        if (GuestsArrived >= TotalGuests)
-            return;
-
-        GuestsArrived++;
-
-        Debug.Log("Guests arrived: " + GuestsArrived + "/" + TotalGuests);
-    }
-
-    // Called when a guest leaves the resort
-    public void GuestLeftResort()
-    {
-        if (CurrentState != GuestWaveState.Active)
-            return;
-
-        if (GuestsLeft >= GuestsArrived)
-            return;
-
-        GuestsLeft++;
-
-        Debug.Log("Guests left: " + GuestsLeft + "/" + TotalGuests);
-
-        CheckWaveCompletion();
-    }
-
-    // Called when all scheduled guests have arrived
-    public void FinishArrivals()
-    {
-        if (CurrentState != GuestWaveState.Active)
-            return;
-
-        if (GuestsArrived != TotalGuests)
-            return;
-
-        arrivalsFinished = true;
-
-        Debug.Log("All guests have arrived.");
-
-        CheckWaveCompletion();
-    }
-
-    // Checks whether the wave can finish
-    private void CheckWaveCompletion()
-    {
-        if (CurrentState != GuestWaveState.Active)
-            return;
-
-        if (arrivalsFinished && GuestsLeft == TotalGuests)
+        if (CurrentState == GuestWaveState.Active && GuestsArrived < TotalGuests)
         {
-            CompleteWave();
+            GuestsArrived++;
+            OnGuestCountChanged?.Invoke(GuestsArrived, TotalGuests);
         }
     }
 
-    // Completes the current wave
-    private void CompleteWave()
+    public void GuestLeftResort()
     {
-        ChangeState(GuestWaveState.Completed);
-
-        Debug.Log("All guests have left. Wave completed!");
-
-        // Notify other systems that the wave has finished
-        OnWaveCompleted?.Invoke();
+        if (CurrentState != GuestWaveState.Active || GuestsLeft >= TotalGuests) return;
+        GuestsLeft++;
+        if (simulationFinished && GuestsLeft >= TotalGuests) FinalizeWave();
     }
 
-    // Prepares the next wave
+    public void FinishArrivals() { }
+
+    private void HandleSimulationCompleted(float satisfaction, int rating, int coins)
+    {
+        simulationFinished = true;
+        finalSatisfaction = satisfaction;
+        finalRating = rating;
+        finalCoins = coins;
+        OnWaveCompleted?.Invoke();
+        if (GuestsLeft >= TotalGuests) FinalizeWave();
+    }
+
+    private void FinalizeWave()
+    {
+        if (CurrentState != GuestWaveState.Active) return;
+        if (database != null && waveDefinition != null)
+            database.RecordWaveCompletion(playerId, waveDefinition.WaveNumber, finalCoins);
+        ChangeState(GuestWaveState.Completed);
+        OnWaveResult?.Invoke(finalSatisfaction, finalRating, finalCoins);
+    }
+
+    private void ChangeState(GuestWaveState newState)
+    {
+        CurrentState = newState;
+        OnWaveStateChanged?.Invoke(newState);
+        Debug.Log("Guest Wave State: " + CurrentState, this);
+    }
+
+    private static string BuildingKeyFor(ResortNeed need)
+    {
+        switch (need)
+        {
+            case ResortNeed.Rooms: return "RECEPTION";
+            case ResortNeed.Drinks: return "BEACH_BAR";
+            case ResortNeed.Food: return "RESTAURANT";
+            case ResortNeed.Relax: return "POOL";
+            case ResortNeed.OceanView: return "BUNGALOWS";
+            default: throw new ArgumentOutOfRangeException(nameof(need), need, null);
+        }
+    }
+
     public void PrepareNextWave()
     {
-        if (CurrentState != GuestWaveState.Completed)
-            return;
-
-        ChangeState(GuestWaveState.Ready);
+        if (CurrentState == GuestWaveState.Completed)
+        {
+            simulation = null;
+            ChangeState(GuestWaveState.Ready);
+        }
     }
 
-    // Pauses the current wave
     public void PauseWave()
     {
-        if (CurrentState != GuestWaveState.Active)
-            return;
-
-        ChangeState(GuestWaveState.Paused);
+        if (CurrentState == GuestWaveState.Active) ChangeState(GuestWaveState.Paused);
     }
 
-    // Resumes a paused wave
     public void ResumeWave()
     {
-        if (CurrentState != GuestWaveState.Paused)
-            return;
+        if (CurrentState == GuestWaveState.Paused) ChangeState(GuestWaveState.Active);
+    }
 
-        ChangeState(GuestWaveState.Active);
+    private void OnApplicationPause(bool paused)
+    {
+        if (paused) PauseWave();
+        else ResumeWave();
+    }
+
+    private void OnDestroy()
+    {
+        database?.Dispose();
     }
 }
