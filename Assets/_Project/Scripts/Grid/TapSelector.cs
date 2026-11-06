@@ -4,9 +4,11 @@ using UnityEngine.InputSystem;
 
 public class TapSelector : MonoBehaviour
 {
-    [SerializeField] IsoCameraRig cameraRig;
-    [SerializeField] GridMap grid;
+    [Header("Raycast Settings")]
+    [SerializeField] Camera mainCamera;
+    [SerializeField] LayerMask selectableLayer = Physics.DefaultRaycastLayers;
 
+    [Header("Input")]
     [SerializeField] InputActionReference pointerPress;
     [SerializeField] InputActionReference pointerPosition;
     [SerializeField] InputActionReference touch1Press;
@@ -17,12 +19,21 @@ public class TapSelector : MonoBehaviour
 
     public event Action<BuildingSlot> BuildingTapped;
 
-    Vector2 downPos;
-    float downTime;
-    bool tracking;
+    private Vector2 downPos;
+    private float downTime;
+    private bool tracking;
+    
+    private BuildingSlot hoveredBuilding;
+
+    void Awake()
+    {
+        if (mainCamera == null) mainCamera = Camera.main;
+    }
 
     void Update()
     {
+        HandleHover();
+
         if (touch1Press.action.IsPressed()) { tracking = false; return; }
 
         if (pointerPress.action.WasPressedThisFrame())
@@ -46,6 +57,28 @@ public class TapSelector : MonoBehaviour
         }
     }
 
+    void HandleHover()
+    {
+        Vector2 screenPos = pointerPosition.action.ReadValue<Vector2>();
+        Ray ray = mainCamera.ScreenPointToRay(screenPos);
+        
+        if (Physics.Raycast(ray, out RaycastHit hit, 1000f, selectableLayer))
+        {
+            BuildingSlot building = hit.collider.GetComponentInParent<BuildingSlot>();
+            if (building != hoveredBuilding)
+            {
+                if (hoveredBuilding != null) hoveredBuilding.SetHighlight(false);
+                hoveredBuilding = building;
+                if (hoveredBuilding != null) hoveredBuilding.SetHighlight(true);
+            }
+        }
+        else if (hoveredBuilding != null)
+        {
+            hoveredBuilding.SetHighlight(false);
+            hoveredBuilding = null;
+        }
+    }
+
     bool MovedTooFar(Vector2 pos)
     {
         float dpi = Screen.dpi > 0 ? Screen.dpi : 160f;
@@ -55,10 +88,14 @@ public class TapSelector : MonoBehaviour
 
     void HandleTap(Vector2 screenPos)
     {
-        Vector3 world = cameraRig.ScreenToGround(screenPos);
-        Vector2Int cell = grid.WorldToCell(world);
-
-        if (grid.Data.TryGetOccupant(cell, out BuildingSlot building))
-            BuildingTapped?.Invoke(building);
+        Ray ray = mainCamera.ScreenPointToRay(screenPos);
+        if (Physics.Raycast(ray, out RaycastHit hit, 1000f, selectableLayer))
+        {
+            BuildingSlot building = hit.collider.GetComponentInParent<BuildingSlot>();
+            if (building != null)
+            {
+                BuildingTapped?.Invoke(building);
+            }
+        }
     }
 }

@@ -55,7 +55,7 @@ public sealed class GuestMovement : MonoBehaviour
         visual.name = "GuestVisual";
         visual.localPosition = visualLocalPosition; 
         visual.localRotation = Quaternion.Euler(visualLocalEulerAngles);
-        visual.localScale = Vector3.Scale(Vector3.one, Vector3.one * visualScale);
+        visual.localScale = Vector3.Scale(selectedPrefab.localScale, Vector3.one * visualScale);
         AlignVisualFeetToRoot(visual);
 
         // Get the animator and ensure animations keep playing when temporarily hidden
@@ -160,10 +160,11 @@ public sealed class GuestMovement : MonoBehaviour
         nextPosition.y = groundY;
         transform.position = nextPosition;
 
-        Vector3 movement = transform.position - previousPosition;
-        movement.y = 0f;
-        if (movement.sqrMagnitude > 0.0001f)
-            transform.rotation = Quaternion.LookRotation(movement, Vector3.up);
+        // Absolute destination rotation logic (fixes the high-framerate moonwalking issue)
+        Vector3 direction = destination - transform.position;
+        direction.y = 0f;
+        if (direction.sqrMagnitude > 0.001f)
+            transform.rotation = Quaternion.LookRotation(direction, Vector3.up);
 
         if ((transform.position - destination).sqrMagnitude > stoppingDistance * stoppingDistance)
             return;
