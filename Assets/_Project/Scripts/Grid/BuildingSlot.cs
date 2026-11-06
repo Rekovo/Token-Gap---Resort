@@ -6,12 +6,7 @@ public class BuildingSlot : MonoBehaviour
     [SerializeField] Vector2Int footprint = new(2, 2);
     [Tooltip("Where the Worker stands (empty child transform)")]
     [SerializeField] Transform workerAnchor;
-    [Header("Optional visual replacement")]
-    [SerializeField] private Transform visualRoot;
-    [SerializeField] private Transform replacementVisualPrefab;
-    [SerializeField] private Vector3 replacementVisualLocalPosition;
-    [SerializeField] private Vector3 replacementVisualLocalEulerAngles;
-    [SerializeField] private Vector3 replacementVisualLocalScale = Vector3.one;
+    
     [SerializeField, Tooltip("Stable key matching BUILDING_DEFINITION, e.g. RESTAURANT")]
     private string buildingKey;
 
@@ -23,19 +18,10 @@ public class BuildingSlot : MonoBehaviour
     public bool HasWorker => PersistedState != null && PersistedState.workers_assigned > 0;
     public int Level => PersistedState != null ? PersistedState.level : 0;
     private ResortDatabase database;
-
-    private void Awake()
-    {
-        if (replacementVisualPrefab == null) return;
-        Transform parent = visualRoot != null ? visualRoot : transform;
-        foreach (Renderer renderer in parent.GetComponentsInChildren<Renderer>(true))
-            renderer.enabled = false;
-        Transform visual = Instantiate(replacementVisualPrefab, parent, false);
-        visual.name = "BuildingVisual";
-        visual.localPosition += replacementVisualLocalPosition;
-        visual.localRotation *= Quaternion.Euler(replacementVisualLocalEulerAngles);
-        visual.localScale = Vector3.Scale(visual.localScale, replacementVisualLocalScale);
-    }
+    private Renderer[] visualRenderers;
+    private MaterialPropertyBlock propBlock;
+    private static readonly int BaseColorID = Shader.PropertyToID("_BaseColor"); // URP
+    private static readonly int ColorID = Shader.PropertyToID("_Color"); // Standard
 
     void Start()
     {
@@ -53,6 +39,7 @@ public class BuildingSlot : MonoBehaviour
             Debug.LogError($"{name}: assign a GridMap before starting.", this);
             return;
         }
+        
         Vector3 bottomLeftCentre = transform.position
             - new Vector3(footprint.x - 1, 0, footprint.y - 1) * 0.5f * grid.CellSize;
         Origin = grid.WorldToCell(bottomLeftCentre);
@@ -75,6 +62,26 @@ public class BuildingSlot : MonoBehaviour
     {
         if (database == null || string.IsNullOrWhiteSpace(buildingKey)) return;
         PersistedState = database.GetBuildingState("test-player-001", buildingKey);
+    }
+
+    public void SetHighlight(bool active)
+    {
+        if (visualRenderers == null)
+        {
+            visualRenderers = GetComponentsInChildren<Renderer>(true);
+            propBlock = new MaterialPropertyBlock();
+        }
+
+        // Darkens the building slightly on hover for visual feedback
+        Color tint = active ? Color.gray : Color.white;
+
+        foreach (Renderer r in visualRenderers)
+        {
+            r.GetPropertyBlock(propBlock);
+            propBlock.SetColor(BaseColorID, tint);
+            propBlock.SetColor(ColorID, tint);
+            r.SetPropertyBlock(propBlock);
+        }
     }
 
     void OnDestroy()
