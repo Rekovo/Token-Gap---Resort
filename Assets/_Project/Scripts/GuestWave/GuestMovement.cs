@@ -16,8 +16,9 @@ public sealed class GuestMovement : MonoBehaviour
     [SerializeField, Min(0.1f)] private float moveSpeed = 2f;
     [SerializeField, Min(0f)] private float stoppingDistance = 0.1f;
 
-    [Header("Visual")]
-    [SerializeField] private Transform visualPrefab;
+    [Header("Visual (SCRUM-80)")]
+    [Tooltip("Add multiple guest visual prefabs here. One will be chosen randomly on spawn.")]
+    [SerializeField] private Transform[] visualPrefabs; 
     [SerializeField] private Vector3 visualLocalPosition;
     [SerializeField] private Vector3 visualLocalEulerAngles;
     [SerializeField, Min(0.01f)] private float visualScale = 1f;
@@ -37,22 +38,34 @@ public sealed class GuestMovement : MonoBehaviour
     private bool waitingForService;
     private bool isReturning;
     private bool hasStartedWalking;
-    private float visitDisplayTimer;
+
+    // Animation variables (SCRUM-81)
+    private Animator animator;
+    private static readonly int IsWalkingHash = Animator.StringToHash("IsWalking");
 
     private void Awake()
     {
-        if (visualPrefab == null)
+        if (visualPrefabs == null || visualPrefabs.Length == 0)
             return;
 
-        Transform visual = Instantiate(visualPrefab, transform, false);
+        // Randomly select a guest variant from the array
+        Transform selectedPrefab = visualPrefabs[UnityEngine.Random.Range(0, visualPrefabs.Length)];
+        
+        Transform visual = Instantiate(selectedPrefab, transform, false);
         visual.name = "GuestVisual";
-        // Keep the FBX root's authored transform. Imported models often use a
-        // non-unit scale/orientation to match their source units and axes.
-        visual.localPosition += visualLocalPosition;
-        visual.localRotation *= Quaternion.Euler(visualLocalEulerAngles);
-        visual.localScale = Vector3.Scale(visual.localScale, Vector3.one * visualScale);
+        visual.localPosition = visualLocalPosition; 
+        visual.localRotation = Quaternion.Euler(visualLocalEulerAngles);
+        visual.localScale = Vector3.Scale(Vector3.one, Vector3.one * visualScale);
         AlignVisualFeetToRoot(visual);
-        // Guests remain hidden inside the ship until their first visit begins.
+
+        // Get the animator and ensure animations keep playing when temporarily hidden
+        animator = visual.GetComponentInChildren<Animator>();
+        if (animator != null)
+        {
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            animator.applyRootMotion = false;
+        }
+
         SetVisualVisible(false);
     }
 
@@ -73,6 +86,8 @@ public sealed class GuestMovement : MonoBehaviour
         isReturning = false;
         IsAtEntrance = false;
         hasStartedWalking = false;
+        
+        UpdateAnimationState(false);
     }
 
     public void QueueVisit(ResortNeed need, int unitIndex, Vector3 visitPoint)
@@ -110,6 +125,7 @@ public sealed class GuestMovement : MonoBehaviour
         isMoving = false;
         waitingForService = false;
         isReturning = true;
+        SetVisualVisible(true); // Ensure visible on return journey
         SetDestination(entrancePosition);
     }
 
@@ -118,14 +134,26 @@ public sealed class GuestMovement : MonoBehaviour
         if (IsAtEntrance || waveController == null)
             return;
 
-        if (waveController.CurrentState == GuestWaveState.Paused) return;
+        if (waveController.CurrentState == GuestWaveState.Paused) 
+        {
+            UpdateAnimationState(false);
+            return;
+        }
 
         if (waitingForService)
         {
+            UpdateAnimationState(false);
             if (currentVisit != null && currentVisit.IsServed) StartNextVisit();
             return;
         }
-        if (!isMoving) return;
+
+        if (!isMoving) 
+        {
+            UpdateAnimationState(false);
+            return;
+        }
+
+        UpdateAnimationState(true);
 
         Vector3 previousPosition = transform.position;
         Vector3 nextPosition = Vector3.MoveTowards(previousPosition, destination, moveSpeed * Time.deltaTime);
@@ -141,6 +169,8 @@ public sealed class GuestMovement : MonoBehaviour
             return;
 
         isMoving = false;
+        UpdateAnimationState(false); 
+
         if (isReturning)
         {
             isReturning = false;
@@ -151,6 +181,7 @@ public sealed class GuestMovement : MonoBehaviour
         else
         {
             waitingForService = true;
+            SetVisualVisible(false); // Hide guest when they arrive at the building
         }
     }
 
@@ -171,6 +202,7 @@ public sealed class GuestMovement : MonoBehaviour
         currentVisit = visit;
         waitingForService = false;
         isMoving = true;
+        SetVisualVisible(true); // Show guest when heading to a building
         SetDestination(visit.Destination);
     }
 
@@ -190,6 +222,7 @@ public sealed class GuestMovement : MonoBehaviour
         if ((destination - transform.position).sqrMagnitude <= stoppingDistance * stoppingDistance)
         {
             isMoving = false;
+            UpdateAnimationState(false);
             if (isReturning)
             {
                 isReturning = false;
@@ -204,6 +237,7 @@ public sealed class GuestMovement : MonoBehaviour
             else
             {
                 waitingForService = true;
+                SetVisualVisible(false); // Hide guest if they instantly arrive
             }
         }
     }
@@ -225,6 +259,14 @@ public sealed class GuestMovement : MonoBehaviour
     {
         foreach (Renderer renderer in GetComponentsInChildren<Renderer>(true))
             renderer.enabled = visible;
+    }
+
+    private void UpdateAnimationState(bool isWalking)
+    {
+        if (animator != null && animator.GetBool(IsWalkingHash) != isWalking)
+        {
+            animator.SetBool(IsWalkingHash, isWalking);
+        }
     }
 
     private void OnDestroy()
