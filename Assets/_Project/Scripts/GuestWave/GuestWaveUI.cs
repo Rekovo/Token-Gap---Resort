@@ -66,6 +66,11 @@ public class GuestWaveUI : MonoBehaviour
                 startWaveButton.interactable = false;
                 break;
 
+            case GuestWaveState.Resolving:
+                waveStatusText.text = "Wave: Finalizing";
+                startWaveButton.interactable = false;
+                break;
+
             case GuestWaveState.Paused:
                 waveStatusText.text = "Wave: Paused";
                 startWaveButton.interactable = false;

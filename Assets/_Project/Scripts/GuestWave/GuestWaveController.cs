@@ -44,7 +44,7 @@ public class GuestWaveController : MonoBehaviour
 
     private void Update()
     {
-        if (CurrentState == GuestWaveState.Active && simulation != null)
+        if ((CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving) && simulation != null)
         {
             simulation.Tick(Time.deltaTime);
             if (simulation.IsActive && simulation.Elapsed >= WaveDuration && simulation.Elapsed >= nextDrainDiagnosticTime)
@@ -53,7 +53,7 @@ public class GuestWaveController : MonoBehaviour
                 Debug.Log($"Wave drain at {simulation.Elapsed:F0}s: {simulation.DrainStatus}; guests returned {GuestsLeft}/{TotalGuests}.", this);
             }
         }
-        if (CurrentState == GuestWaveState.Active && simulationFinished)
+        if ((CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving) && simulationFinished)
         {
         returnWaitTimer += Time.deltaTime;
         if (returnWaitTimer >= guestReturnTimeout) FinalizeWave();
@@ -127,7 +127,7 @@ public class GuestWaveController : MonoBehaviour
 
     public void GuestLeftResort()
     {
-        if (CurrentState != GuestWaveState.Active || GuestsLeft >= TotalGuests) return;
+        if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving) || GuestsLeft >= TotalGuests) return;
         GuestsLeft++;
         if (simulationFinished && GuestsLeft >= TotalGuests) FinalizeWave();
     }
@@ -137,6 +137,8 @@ public class GuestWaveController : MonoBehaviour
     private void HandleSimulationCompleted(float satisfaction, int rating, int coins)
     {
         simulationFinished = true;
+        if (CurrentState == GuestWaveState.Active)
+            ChangeState(GuestWaveState.Resolving);
         finalSatisfaction = satisfaction;
         finalRating = rating;
         finalCoins = coins;
@@ -146,7 +148,7 @@ public class GuestWaveController : MonoBehaviour
 
     private void FinalizeWave()
     {
-        if (CurrentState != GuestWaveState.Active) return;
+        if (CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving) return;
         if (database != null && waveDefinition != null)
             database.RecordWaveCompletion(playerId, waveDefinition.WaveNumber, finalCoins);
         ChangeState(GuestWaveState.Completed);
@@ -184,12 +186,13 @@ public class GuestWaveController : MonoBehaviour
 
     public void PauseWave()
     {
-        if (CurrentState == GuestWaveState.Active) ChangeState(GuestWaveState.Paused);
+        if (CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving) ChangeState(GuestWaveState.Paused);
     }
 
     public void ResumeWave()
     {
-        if (CurrentState == GuestWaveState.Paused) ChangeState(GuestWaveState.Active);
+        if (CurrentState == GuestWaveState.Paused)
+            ChangeState(simulationFinished ? GuestWaveState.Resolving : GuestWaveState.Active);
     }
 
     private void OnApplicationPause(bool paused)
