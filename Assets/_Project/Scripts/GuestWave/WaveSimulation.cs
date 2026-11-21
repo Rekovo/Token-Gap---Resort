@@ -4,6 +4,28 @@ using UnityEngine;
 
 public enum WaveNeedStatus { Ok, Bottleneck, Recovering, Satisfied }
 
+/// <summary>Current effective service performance exposed to UI and other systems.</summary>
+public readonly struct ServicePerformance
+{
+    public ResortNeed Need { get; }
+    public bool Staffed { get; }
+    public float Utilization { get; }
+    public float ServiceRatePerSecond { get; }
+    public bool EnergyBoosted { get; }
+    public float BoostSecondsRemaining { get; }
+
+    public ServicePerformance(ResortNeed need, bool staffed, float utilization,
+        float serviceRatePerSecond, bool energyBoosted, float boostSecondsRemaining)
+    {
+        Need = need;
+        Staffed = staffed;
+        Utilization = utilization;
+        ServiceRatePerSecond = serviceRatePerSecond;
+        EnergyBoosted = energyBoosted;
+        BoostSecondsRemaining = boostSecondsRemaining;
+    }
+}
+
 /// <summary>Processes wave demand independently for each service building.</summary>
 public sealed class WaveSimulation
 {
@@ -60,6 +82,7 @@ public sealed class WaveSimulation
     public event Action<ResortNeed, WaveNeedStatus, int> NeedStatusChanged;
     public event Action<float> ArrivalProgressChanged;
     public event Action<float, int, int> Completed;
+    public event Action<ServicePerformance> PerformanceChanged;
     public bool IsActive { get; private set; }
     public bool ArrivalsEnded => arrivalClosed;
     public float Elapsed => time;
@@ -90,6 +113,25 @@ public sealed class WaveSimulation
     public int InServiceCount(ResortNeed need) => FindNeed(need)?.InService ?? 0;
     public int OutstandingCount(ResortNeed need) => FindNeed(need)?.Outstanding ?? 0;
     public int FilledCount(ResortNeed need) => FindNeed(need)?.Served ?? 0;
+
+    public bool TryGetServicePerformance(ResortNeed need, out ServicePerformance performance)
+    {
+        NeedState state = FindNeed(need);
+        if (state == null)
+        {
+            performance = default;
+            return false;
+        }
+
+        performance = CreatePerformance(state);
+        return true;
+    }
+
+    public void PublishPerformanceState()
+    {
+        foreach (NeedState state in needs)
+            PerformanceChanged?.Invoke(CreatePerformance(state));
+    }
 
     /// <summary>Returns an immutable snapshot of completed waiting durations for final scoring.</summary>
     public IReadOnlyList<float> GetWaitingTimeHistory(ResortNeed need)
@@ -138,6 +180,7 @@ public sealed class WaveSimulation
         while (state.ServicePlaces.Count < state.Capacity) state.ServicePlaces.Add(new ServicePlace());
         while (state.ServicePlaces.Count > state.Capacity) state.ServicePlaces.RemoveAt(state.ServicePlaces.Count - 1);
         Dispatch(state);
+        PerformanceChanged?.Invoke(CreatePerformance(state));
         Notify(state);
         return true;
     }
@@ -148,6 +191,7 @@ public sealed class WaveSimulation
         if (!CanBoost(need, energyAvailable)) return false;
         state.BoostUsed = true;
         state.BoostRemaining = config.EnergyBoostDuration;
+        PerformanceChanged?.Invoke(CreatePerformance(state));
         return true;
     }
 
@@ -167,8 +211,11 @@ public sealed class WaveSimulation
 
         foreach (NeedState state in needs)
         {
+            bool wasBoosted = state.BoostRemaining > 0f;
             ProcessServices(state, deltaTime);
             state.BoostRemaining = Mathf.Max(0f, state.BoostRemaining - deltaTime);
+            if (wasBoosted && state.BoostRemaining <= 0f)
+                PerformanceChanged?.Invoke(CreatePerformance(state));
         }
 
         // Release every scheduled arrival crossed by this frame before draining
@@ -197,7 +244,7 @@ public sealed class WaveSimulation
     {
         float boostedSeconds = Mathf.Min(deltaTime, state.BoostRemaining);
         float normalSeconds = deltaTime - boostedSeconds;
-        float utilization = state.Staffed ? 1f : config.UtilizationEmpty;
+        float utilization = config.UtilizationFor(state.Staffed);
         float boostedRate = utilization * BoostMultiplier();
         float normalRate = utilization;
 
@@ -208,9 +255,16 @@ public sealed class WaveSimulation
         }
     }
 
-    private float BoostMultiplier() => 1f / (1f - config.EnergySpeedReduction);
-    private float ServiceRate(NeedState state) => (state.Staffed ? 1f : config.UtilizationEmpty)
-        * (state.BoostRemaining > 0f ? BoostMultiplier() : 1f) / config.ServiceTime;
+    private float BoostMultiplier() => config.EnergyBoostMultiplier;
+    private ServicePerformance CreatePerformance(NeedState state)
+    {
+        float utilization = config.UtilizationFor(state.Staffed);
+        float rate = utilization * (state.BoostRemaining > 0f ? BoostMultiplier() : 1f) / config.ServiceTime;
+        return new ServicePerformance(state.Need, state.Staffed, utilization, rate,
+            state.BoostRemaining > 0f, state.BoostRemaining);
+    }
+
+    private float ServiceRate(NeedState state) => CreatePerformance(state).ServiceRatePerSecond;
 
     private void AddArrivals()
     {

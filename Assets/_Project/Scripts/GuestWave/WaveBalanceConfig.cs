@@ -7,6 +7,7 @@ public sealed class WaveBalanceConfig : ScriptableObject
     [SerializeField, Min(1f)] private float waveTimer = 90f;
     [Header("Building service")]
     [SerializeField, Min(0.1f)] private float serviceTime = 12f;
+    [SerializeField, Range(0.05f, 1f)] private float utilizationStaffed = 1f;
     [SerializeField, Range(0.05f, 0.6f)] private float utilizationEmpty = 0.33f;
     [SerializeField] private int[] capacityPerLevel = { 3, 5, 7 };
     [Header("Bottleneck")]
@@ -30,7 +31,10 @@ public sealed class WaveBalanceConfig : ScriptableObject
     public float WaveTimer => waveTimer;
     public float NeedArrivalWindow => waveTimer;
     public float ServiceTime => serviceTime;
+    public float UtilizationStaffed => utilizationStaffed;
     public float UtilizationEmpty => utilizationEmpty;
+    public float UtilizationFor(bool staffed) => staffed ? utilizationStaffed : utilizationEmpty;
+    public float EnergyBoostMultiplier => 1f / Mathf.Max(0.05f, 1f - energySpeedReduction);
     public int BottleneckThreshold => bottleneckThreshold;
     public float BottleneckHysteresisSeconds => bottleneckHysteresisSeconds;
     public float PatienceGrace => patienceGrace;
@@ -66,5 +70,7 @@ public sealed class WaveBalanceConfig : ScriptableObject
             Debug.LogError("patienceFloorAfter must be greater than patienceGrace.", this);
         if (utilizationEmpty <= 0f)
             Debug.LogError("WR2 violated: utilizationEmpty must be greater than zero.", this);
+        if (utilizationStaffed <= 0f)
+            Debug.LogError("utilizationStaffed must be greater than zero.", this);
     }
 }

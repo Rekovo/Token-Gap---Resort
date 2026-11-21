@@ -18,10 +18,12 @@ public class GuestWaveController : MonoBehaviour
     public event Action<float> OnArrivalProgressChanged;
     public event Action<ResortNeed, int, int> OnNeedProgressChanged;
     public event Action<ResortNeed, WaveNeedStatus, int> OnNeedStatusChanged;
+    public event Action<ServicePerformance> OnServicePerformanceChanged;
     public int TotalGuests { get; private set; }
     public int GuestsArrived { get; private set; }
     public int GuestsLeft { get; private set; }
     public float Elapsed => simulation != null ? simulation.Elapsed : 0f;
+    public string ServiceDiagnostics => simulation != null ? simulation.DrainStatus : "Wave not running.";
     public WaveDefinition CurrentWaveDefinition => waveDefinition;
     public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
     public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
@@ -79,16 +81,13 @@ public class GuestWaveController : MonoBehaviour
         simulation.NeedProgressChanged += (need, served, total) => OnNeedProgressChanged?.Invoke(need, served, total);
         simulation.NeedStatusChanged += (need, status, queue) => OnNeedStatusChanged?.Invoke(need, status, queue);
         simulation.ArrivalProgressChanged += progress => OnArrivalProgressChanged?.Invoke(progress);
+        simulation.PerformanceChanged += performance => OnServicePerformanceChanged?.Invoke(performance);
         simulation.Completed += HandleSimulationCompleted;
         simulation.Start(waveDefinition);
         if (database != null && waveDefinition.Demands != null)
         {
             foreach (var demand in waveDefinition.Demands)
-            {
-                string key = BuildingKeyFor(demand.need);
-                BuildingStateRecord state = database.GetBuildingState(playerId, key);
-                if (state != null) simulation.SetBuilding(demand.need, Mathf.Max(1, state.level), state.workers_assigned > 0);
-            }
+                RefreshBuildingPerformance(demand.need);
         }
 
         TotalGuests = guestCount;
@@ -106,9 +105,65 @@ public class GuestWaveController : MonoBehaviour
         simulation?.SetBuilding(need, level, staffed);
     }
 
+    /// <summary>Re-reads the saved assignment and updates this building's live simulation performance.</summary>
+    public bool RefreshBuildingPerformance(string buildingKey)
+    {
+        if (!TryNeedForBuildingKey(buildingKey, out ResortNeed need)) return false;
+        return RefreshBuildingPerformance(need);
+    }
+
+    /// <summary>Recalculates from the authoritative persisted worker assignment.</summary>
+    public bool RefreshBuildingPerformance(ResortNeed need)
+    {
+        if (database == null || balanceConfig == null) return false;
+        BuildingStateRecord savedState = database.GetBuildingState(playerId, BuildingKeyFor(need));
+        if (savedState == null) return false;
+
+        if (simulation != null && simulation.IsActive
+            && simulation.SetBuilding(need, Mathf.Max(1, savedState.level), savedState.workers_assigned > 0))
+            return true; // WaveSimulation raises the performance-changed event immediately.
+
+        float utilization = balanceConfig.UtilizationFor(savedState.workers_assigned > 0);
+        var performance = new ServicePerformance(need, savedState.workers_assigned > 0, utilization,
+            utilization / balanceConfig.ServiceTime, false, 0f);
+        OnServicePerformanceChanged?.Invoke(performance);
+        return true;
+    }
+
+    /// <summary>Returns current simulation performance, or the configured preparation value.</summary>
+    public bool TryGetServicePerformance(ResortNeed need, out ServicePerformance performance)
+    {
+        if (simulation != null && simulation.TryGetServicePerformance(need, out performance)) return true;
+        if (database != null && balanceConfig != null)
+        {
+            BuildingStateRecord savedState = database.GetBuildingState(playerId, BuildingKeyFor(need));
+            if (savedState != null)
+            {
+                bool staffed = savedState.workers_assigned > 0;
+                float utilization = balanceConfig.UtilizationFor(staffed);
+                performance = new ServicePerformance(need, staffed, utilization,
+                    utilization / balanceConfig.ServiceTime, false, 0f);
+                return true;
+            }
+        }
+
+        performance = default;
+        return false;
+    }
+
+    public bool CanBoost(ResortNeed need)
+    {
+        if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
+            || database == null || simulation == null || balanceConfig == null)
+            return false;
+
+        return simulation.CanBoost(need, database.GetCurrencyAmount(playerId, "ENERGY"));
+    }
+
     public bool TryBoost(ResortNeed need)
     {
-        if (database == null || simulation == null || balanceConfig == null) return false;
+        if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
+            || database == null || simulation == null || balanceConfig == null) return false;
         int energy = database.GetCurrencyAmount(playerId, "ENERGY");
         if (!simulation.CanBoost(need, energy)) return false;
         if (!database.TrySpendCurrency(playerId, "ENERGY", balanceConfig.EnergyCostPerBoost, "WAVE_ENERGY_BOOST")) return false;
@@ -175,6 +230,19 @@ public class GuestWaveController : MonoBehaviour
         }
     }
 
+    private static bool TryNeedForBuildingKey(string buildingKey, out ResortNeed need)
+    {
+        switch (buildingKey)
+        {
+            case "RECEPTION": need = ResortNeed.Rooms; return true;
+            case "BEACH_BAR": need = ResortNeed.Drinks; return true;
+            case "RESTAURANT": need = ResortNeed.Food; return true;
+            case "POOL": need = ResortNeed.Relax; return true;
+            case "BUNGALOWS": need = ResortNeed.OceanView; return true;
+            default: need = default; return false;
+        }
+    }
+
     public void PrepareNextWave()
     {
         if (CurrentState == GuestWaveState.Completed)
@@ -192,7 +260,11 @@ public class GuestWaveController : MonoBehaviour
     public void ResumeWave()
     {
         if (CurrentState == GuestWaveState.Paused)
+        {
+            // Re-publish saved boost durations and effective rates for HUD listeners.
+            simulation?.PublishPerformanceState();
             ChangeState(simulationFinished ? GuestWaveState.Resolving : GuestWaveState.Active);
+        }
     }
 
     private void OnApplicationPause(bool paused)
