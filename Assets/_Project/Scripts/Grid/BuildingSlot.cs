@@ -9,6 +9,8 @@ public class BuildingSlot : MonoBehaviour
     
     [SerializeField, Tooltip("Stable key matching BUILDING_DEFINITION, e.g. RESTAURANT")]
     private string buildingKey;
+    [SerializeField, Tooltip("Optional; auto-found in the active scene when omitted")]
+    private GuestWaveController waveController;
 
     public Vector2Int Origin { get; private set; }
     public Transform WorkerAnchor => workerAnchor;
@@ -25,6 +27,8 @@ public class BuildingSlot : MonoBehaviour
 
     void Start()
     {
+        if (waveController == null) waveController = FindAnyObjectByType<GuestWaveController>();
+
         if (!string.IsNullOrWhiteSpace(buildingKey))
         {
             database = new ResortDatabase();
@@ -55,6 +59,16 @@ public class BuildingSlot : MonoBehaviour
         if (!database.MoveWorker("test-player-001", buildingKey, target.buildingKey)) return false;
         RefreshPersistedState();
         target.RefreshPersistedState();
+
+        GuestWaveController controller = waveController != null ? waveController : target.waveController;
+        if (controller == null) controller = FindAnyObjectByType<GuestWaveController>();
+        if (controller != null)
+        {
+            // Re-read both records after the successful transaction so the simulation
+            // always uses the authoritative assignments for source and destination.
+            controller.RefreshBuildingPerformance(buildingKey);
+            controller.RefreshBuildingPerformance(target.buildingKey);
+        }
         return true;
     }
 
