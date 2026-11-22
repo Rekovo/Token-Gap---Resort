@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 public class TapSelector : MonoBehaviour
 {
@@ -24,14 +27,24 @@ public class TapSelector : MonoBehaviour
     private bool tracking;
     
     private BuildingSlot hoveredBuilding;
+    private UIManager uiManager;
+    private readonly List<RaycastResult> uiHits = new List<RaycastResult>();
 
     void Awake()
     {
         if (mainCamera == null) mainCamera = Camera.main;
+        uiManager = FindAnyObjectByType<UIManager>();
     }
 
     void Update()
     {
+        if (uiManager != null && uiManager.IsAnyMenuOpen)
+        {
+            tracking = false;
+            if (hoveredBuilding != null) hoveredBuilding.SetHighlight(false);
+            hoveredBuilding = null;
+            return;
+        }
         HandleHover();
 
         if (touch1Press.action.IsPressed()) { tracking = false; return; }
@@ -88,6 +101,7 @@ public class TapSelector : MonoBehaviour
 
     void HandleTap(Vector2 screenPos)
     {
+        if (PointerIsOverControl(screenPos)) return;
         Ray ray = mainCamera.ScreenPointToRay(screenPos);
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, selectableLayer))
         {
@@ -97,5 +111,15 @@ public class TapSelector : MonoBehaviour
                 BuildingTapped?.Invoke(building);
             }
         }
+    }
+
+    private bool PointerIsOverControl(Vector2 screenPos)
+    {
+        if (EventSystem.current == null) return false;
+        uiHits.Clear();
+        EventSystem.current.RaycastAll(new PointerEventData(EventSystem.current) { position = screenPos }, uiHits);
+        foreach (RaycastResult hit in uiHits)
+            if (hit.gameObject.GetComponentInParent<Selectable>() != null) return true;
+        return false;
     }
 }

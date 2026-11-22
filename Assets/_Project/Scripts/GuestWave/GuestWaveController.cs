@@ -169,6 +169,17 @@ public class GuestWaveController : MonoBehaviour
         return false;
     }
 
+    /// <summary>Reads the saved building level using the existing balance table.</summary>
+    public bool TryGetServicePlaces(ResortNeed need, out int places)
+    {
+        places = 0;
+        if (database == null || balanceConfig == null) return false;
+        BuildingStateRecord state = database.GetBuildingState(playerId, BuildingKeyFor(need));
+        if (state == null || state.is_unlocked != 1 || state.level < 1) return false;
+        places = balanceConfig.CapacityForLevel(state.level);
+        return true;
+    }
+
     public bool CanBoost(ResortNeed need)
     {
         if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
