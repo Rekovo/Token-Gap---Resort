@@ -12,6 +12,8 @@ public class GuestWaveTester : MonoBehaviour
     private ResortDatabase debugDatabase;
     private bool showDebugOverlay = true;
     private string lastDebugAction = "Ready. Start a wave with 1.";
+    private string staffingReadout = "Staffing data loading...";
+    private float nextStaffingReadoutTime;
 
     private void Awake()
     {
@@ -37,6 +39,12 @@ public class GuestWaveTester : MonoBehaviour
 
         if (Keyboard.current.qKey.wasPressedThisFrame)
             TryTestBoost();
+
+        if (Keyboard.current.tKey.wasPressedThisFrame)
+            PreparePoolPurchaseTest();
+
+        if (Keyboard.current.pKey.wasPressedThisFrame)
+            TryTestPoolPurchase();
 #endif
 
         // Start a wave with 5 guests
@@ -129,6 +137,100 @@ public class GuestWaveTester : MonoBehaviour
         Debug.Log(lastDebugAction, this);
     }
 
+    private void PreparePoolPurchaseTest()
+    {
+        if (debugDatabase == null || controller == null) return;
+        if (controller.CurrentState == GuestWaveState.Active || controller.CurrentState == GuestWaveState.Resolving
+            || controller.CurrentState == GuestWaveState.Paused)
+        {
+            lastDebugAction = "Wait until the current wave is complete before preparing a Pool purchase test.";
+            Debug.LogWarning(lastDebugAction, this);
+            return;
+        }
+
+        BuildingSlot pool = FindBuilding("POOL");
+        if (pool == null)
+        {
+            lastDebugAction = "Pool purchase test unavailable: Pool BuildingSlot is missing.";
+            Debug.LogWarning(lastDebugAction, this);
+            return;
+        }
+        if (pool.IsUnlocked)
+        {
+            lastDebugAction = "Pool is already purchased. Staffing: " + RefreshStaffingReadout();
+            Debug.Log(lastDebugAction, this);
+            return;
+        }
+
+        int cost = controller.GetBuildingUnlockCost("POOL");
+        if (cost < 0)
+        {
+            lastDebugAction = "Pool purchase test unavailable: Pool unlock cost is not configured.";
+            Debug.LogWarning(lastDebugAction, this);
+            return;
+        }
+
+        // This Editor-only setup satisfies the real wave and coin gates. The following
+        // purchase action still uses BuildingSlot.TryPurchaseUnlock and the production transaction.
+        debugDatabase.RecordWaveCompletion(DebugPlayerId, 3, 0);
+        debugDatabase.AddCurrency(DebugPlayerId, "COINS", cost, "DEV_TEST_POOL_PURCHASE_GRANT");
+        lastDebugAction = $"Pool purchase test ready: Wave 3 gate set and +{cost} test Coins granted. Press P to purchase.";
+        Debug.Log(lastDebugAction, this);
+        RefreshStaffingReadout();
+    }
+
+    private void TryTestPoolPurchase()
+    {
+        BuildingSlot pool = FindBuilding("POOL");
+        if (pool == null)
+        {
+            lastDebugAction = "Pool purchase test unavailable: Pool BuildingSlot is missing.";
+            Debug.LogWarning(lastDebugAction, this);
+            return;
+        }
+
+        pool.RefreshPersistedState();
+        if (pool.IsUnlocked)
+        {
+            lastDebugAction = "Pool purchase already complete. " + RefreshStaffingReadout();
+            Debug.Log(lastDebugAction, this);
+            return;
+        }
+
+        bool purchased = pool.TryPurchaseUnlock();
+        pool.RefreshPersistedState();
+        pool.GetComponent<BuildingWorkerIndicator>()?.RefreshFromSave();
+        string staffing = RefreshStaffingReadout();
+        lastDebugAction = purchased
+            ? "Pool purchase PASS: Pool is unlocked and staffed. " + staffing
+            : "Pool purchase failed. Check wave state, Wave 3 gate, and Coins. " + staffing;
+        Debug.Log(lastDebugAction, this);
+    }
+
+    private string RefreshStaffingReadout()
+    {
+        BuildingSlot[] slots = FindObjectsByType<BuildingSlot>();
+        int availableBuildings = 0;
+        int assignedWorkers = 0;
+        foreach (BuildingSlot slot in slots)
+        {
+            if (slot == null) continue;
+            slot.RefreshPersistedState();
+            if (!slot.IsUnlocked) continue;
+            availableBuildings++;
+            if (slot.HasWorker) assignedWorkers++;
+        }
+
+        BuildingSlot pool = FindBuilding("POOL");
+        string poolStatus = pool == null ? "Pool slot missing"
+            : pool.IsUnlocked ? (pool.HasWorker ? "Pool purchased / staffed" : "Pool purchased / unstaffed")
+            : "Pool not purchased";
+        staffingReadout = $"{assignedWorkers} Workers / {availableBuildings} available buildings; " +
+            $"{availableBuildings - assignedWorkers} unstaffed. {poolStatus}.";
+        nextStaffingReadoutTime = Time.unscaledTime + 0.25f;
+        return staffingReadout;
+    }
+
     private static BuildingSlot FindBuilding(string key)
     {
         BuildingSlot[] slots = FindObjectsByType<BuildingSlot>();
@@ -141,10 +243,19 @@ public class GuestWaveTester : MonoBehaviour
     {
         if (!showDebugOverlay || controller == null) return;
 
-        GUILayout.BeginArea(new Rect(12f, 12f, 450f, 430f), "QA / DEVELOPMENT ONLY", GUI.skin.window);
+        if (Time.unscaledTime >= nextStaffingReadoutTime)
+            RefreshStaffingReadout();
+
+        GUILayout.BeginArea(new Rect(12f, 12f, 470f, 500f), "QA / DEVELOPMENT ONLY", GUI.skin.window);
         GUILayout.Label("QA / DEVELOPMENT ONLY — F2 hides this panel");
-        GUILayout.Label($"Wave: {controller.CurrentState}   Energy: {GetEnergyBalance()}");
-        GUILayout.Label("1 start | R move Worker | G +3 test Energy | Q try Drinks boost | 6 pause | 7 resume");
+        GUILayout.Label($"Wave: {controller.CurrentState}   Energy: {GetEnergyBalance()}   Coins: {GetCoinBalance()}");
+        GUILayout.Label("1 start | R move Worker | G +3 Energy | Q Drinks boost | 6 pause | 7 resume");
+        GUILayout.Label("T prepare Pool purchase test | P purchase Pool");
+        GUILayout.Label(staffingReadout);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Prepare Pool purchase test")) PreparePoolPurchaseTest();
+        if (GUILayout.Button("Purchase Pool")) TryTestPoolPurchase();
+        GUILayout.EndHorizontal();
         GUILayout.Space(6f);
         GUILayout.Label(lastDebugAction);
         GUILayout.Space(6f);
@@ -170,6 +281,10 @@ public class GuestWaveTester : MonoBehaviour
 
     private int GetEnergyBalance() => debugDatabase != null
         ? debugDatabase.GetCurrencyAmount(DebugPlayerId, "ENERGY")
+        : 0;
+
+    private int GetCoinBalance() => debugDatabase != null
+        ? debugDatabase.GetCurrencyAmount(DebugPlayerId, "COINS")
         : 0;
 
     private void OnDestroy() => debugDatabase?.Dispose();

@@ -304,11 +304,14 @@ public class GuestWaveController : MonoBehaviour
     {
         if (database == null || CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving
             || CurrentState == GuestWaveState.Paused) return false;
-        int coinCost = balanceConfig != null ? balanceConfig.BuildingUnlockCost(buildingKey) : -1;
+        int coinCost = GetBuildingUnlockCost(buildingKey);
         if (coinCost < 0 || !database.TryUnlockBuilding(playerId, buildingKey, coinCost)) return false;
         RefreshBuildingPerformance(buildingKey);
         return true;
     }
+
+    public int GetBuildingUnlockCost(string buildingKey) =>
+        balanceConfig != null ? balanceConfig.BuildingUnlockCost(buildingKey) : -1;
 
     private WaveDefinition ResolveNextWaveDefinition()
     {
