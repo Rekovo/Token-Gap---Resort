@@ -21,13 +21,20 @@ public sealed class WaveDefinition : ScriptableObject
         new NeedDemand { need = ResortNeed.Drinks, units = 8 },
         new NeedDemand { need = ResortNeed.Food, units = 6 }
     };
+    [Header("Optional wave event")]
+    [SerializeField, Min(0)] private int suddenRushUnits;
+    [SerializeField, Min(0f)] private float suddenRushStartSeconds = 45f;
+    [SerializeField, Min(0.1f)] private float suddenRushDurationSeconds = 10f;
 
     public int WaveNumber => waveNumber;
     public int VisualGuestCount => visualGuestCount;
     public NeedDemand[] Demands => demands;
+    public int SuddenRushUnits => suddenRushUnits;
+    public float SuddenRushStartSeconds => suddenRushStartSeconds;
+    public float SuddenRushDurationSeconds => suddenRushDurationSeconds;
     public int TotalUnits
     {
-        get { int total = 0; if (demands != null) foreach (var demand in demands) total += Mathf.Max(0, demand.units); return total; }
+        get { int total = Mathf.Max(0, suddenRushUnits); if (demands != null) foreach (var demand in demands) total += Mathf.Max(0, demand.units); return total; }
     }
 
     private void OnValidate()

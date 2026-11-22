@@ -6,19 +6,10 @@ using UnityEngine;
 
 public sealed class GuestSpawner : MonoBehaviour
 {
-    [Serializable]
-    private struct NeedDestination
-    {
-        public ResortNeed need;
-        public Transform destination;
-    }
-
-    private sealed class ScheduledVisit
+    private sealed class PendingVisit
     {
         public ResortNeed Need;
         public int UnitIndex;
-        public float ArrivalTime;
-        public Vector3 Position;
     }
 
     [Header("References")]
@@ -33,10 +24,11 @@ public sealed class GuestSpawner : MonoBehaviour
     private readonly List<GuestMovement> spawnedGuests = new List<GuestMovement>();
     private GuestMovement[] guestsByIndex = Array.Empty<GuestMovement>();
     private Dictionary<ResortNeed, Transform> needDestinations = new Dictionary<ResortNeed, Transform>();
-    private List<ScheduledVisit>[] visitsByGuest = Array.Empty<List<ScheduledVisit>>();
-    private int[] nextVisitByGuest = Array.Empty<int>();
+    private readonly Queue<PendingVisit> pendingVisits = new Queue<PendingVisit>();
+    private readonly HashSet<long> routedNeedUnits = new HashSet<long>();
     private int targetGuestCount;
     private int nextGuestIndex;
+    private int nextVisualRecipient;
     private float spawnCountdown;
     private float spawnInterval;
     private bool returningGuests;
@@ -54,6 +46,7 @@ public sealed class GuestSpawner : MonoBehaviour
 
         waveController.OnWaveStarted += HandleWaveStarted;
         waveController.OnWaveCompleted += HandleWaveCompleted;
+        waveController.OnNeedArrived += HandleNeedArrived;
     }
 
     private void OnDisable()
@@ -62,6 +55,7 @@ public sealed class GuestSpawner : MonoBehaviour
         {
             waveController.OnWaveStarted -= HandleWaveStarted;
             waveController.OnWaveCompleted -= HandleWaveCompleted;
+            waveController.OnNeedArrived -= HandleNeedArrived;
         }
         ClearSpawnedGuests();
     }
@@ -72,7 +66,7 @@ public sealed class GuestSpawner : MonoBehaviour
             return;
 
         SpawnIncomingGuest();
-        DispatchDueVisits();
+        DispatchPendingVisits();
     }
 
     private void HandleWaveStarted(int guestCount)
@@ -85,17 +79,21 @@ public sealed class GuestSpawner : MonoBehaviour
         }
 
         targetGuestCount = Mathf.Max(0, guestCount);
+        pendingVisits.Clear();
+        routedNeedUnits.Clear();
         if (targetGuestCount == 0)
             return;
 
         needDestinations = ResolveNeedDestinations();
-        BuildVisitSchedule(targetGuestCount);
-        if (visitsByGuest.Length == 0)
+        if (needDestinations.Count == 0)
         {
             Debug.LogError("GuestSpawner: no wave demand has a matching building destination.", this);
             targetGuestCount = 0;
             return;
         }
+
+        guestsByIndex = new GuestMovement[targetGuestCount];
+        nextVisualRecipient = 0;
 
         spawnInterval = targetGuestCount > 1
             ? guestGroupArrivalSeconds / (targetGuestCount - 1)
@@ -138,100 +136,72 @@ public sealed class GuestSpawner : MonoBehaviour
         guestsByIndex[guestIndex] = movement;
     }
 
-    private void DispatchDueVisits()
+    private void HandleNeedArrived(ResortNeed need, int unitIndex)
     {
-        float elapsed = waveController.Elapsed;
-        int availableGuests = Mathf.Min(nextGuestIndex, visitsByGuest.Length);
-        for (int guestIndex = 0; guestIndex < availableGuests; guestIndex++)
+        if (!needDestinations.ContainsKey(need))
         {
-            GuestMovement guest = guestsByIndex[guestIndex];
-            if (guest == null)
-                continue;
+            Debug.LogWarning($"GuestSpawner: no unlocked visual destination is available for {need}; service simulation continues.", this);
+            return;
+        }
 
-            List<ScheduledVisit> schedule = visitsByGuest[guestIndex];
-            while (nextVisitByGuest[guestIndex] < schedule.Count)
-            {
-                ScheduledVisit visit = schedule[nextVisitByGuest[guestIndex]];
-                if (visit.ArrivalTime > elapsed)
-                    break;
+        long key = ((long)(int)need << 32) | (uint)unitIndex;
+        if (!routedNeedUnits.Add(key)) return;
+        pendingVisits.Enqueue(new PendingVisit { Need = need, UnitIndex = unitIndex });
+        DispatchPendingVisits();
+    }
 
-                guest.QueueVisit(visit.Need, visit.UnitIndex, visit.Position);
-                nextVisitByGuest[guestIndex]++;
-            }
+    private void DispatchPendingVisits()
+    {
+        while (pendingVisits.Count > 0 && guestsByIndex.Length > 0)
+        {
+            int guestIndex = FindNextVisualRecipient();
+            if (guestIndex < 0) return;
+            PendingVisit visit = pendingVisits.Dequeue();
+            Transform building = needDestinations[visit.Need];
+            int guestSlot = guestIndex % 8;
+            float angle = (guestSlot * 45f + visit.UnitIndex * 17f) * Mathf.Deg2Rad;
+            Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle))
+                * (0.45f + (guestSlot / 4) * 0.3f);
+            guestsByIndex[guestIndex].QueueVisit(visit.Need, visit.UnitIndex, building.position + offset);
         }
     }
 
-    private void BuildVisitSchedule(int guestCount)
+    private int FindNextVisualRecipient()
     {
-        visitsByGuest = new List<ScheduledVisit>[guestCount];
-        guestsByIndex = new GuestMovement[guestCount];
-        nextVisitByGuest = new int[guestCount];
-        for (int i = 0; i < guestCount; i++)
-            visitsByGuest[i] = new List<ScheduledVisit>();
-
-        WaveDefinition definition = waveController.CurrentWaveDefinition;
-        if (definition == null || definition.Demands == null)
-            return;
-
-        float arrivalWindow = waveController.NeedArrivalWindow;
-        int assignmentIndex = 0;
-        foreach (NeedDemand demand in definition.Demands)
+        if (guestsByIndex == null || guestsByIndex.Length == 0) return -1;
+        for (int offset = 0; offset < guestsByIndex.Length; offset++)
         {
-            if (demand.units <= 0)
-                continue;
-            if (!needDestinations.TryGetValue(demand.need, out Transform building) || building == null)
-            {
-                Debug.LogWarning($"GuestSpawner: no building destination found for {demand.need}; those visits are not shown.", this);
-                continue;
-            }
-
-            for (int unit = 0; unit < demand.units; unit++)
-            {
-                int guestIndex = assignmentIndex++ % guestCount;
-                int guestSlot = guestIndex % 8;
-                float angle = (guestSlot * 45f + unit * 17f) * Mathf.Deg2Rad;
-                Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * (0.45f + (guestSlot / 4) * 0.3f);
-                visitsByGuest[guestIndex].Add(new ScheduledVisit
-                {
-                    Need = demand.need,
-                    UnitIndex = unit,
-                    ArrivalTime = arrivalWindow * unit / demand.units,
-                    Position = building.position + offset
-                });
-            }
+            int candidate = (nextVisualRecipient + offset) % guestsByIndex.Length;
+            if (guestsByIndex[candidate] == null) continue;
+            nextVisualRecipient = (candidate + 1) % guestsByIndex.Length;
+            return candidate;
         }
-
-        foreach (List<ScheduledVisit> schedule in visitsByGuest)
-            schedule.Sort((a, b) => a.ArrivalTime.CompareTo(b.ArrivalTime));
+        return -1;
     }
 
     private Dictionary<ResortNeed, Transform> ResolveNeedDestinations()
     {
         Dictionary<ResortNeed, Transform> resolved = new Dictionary<ResortNeed, Transform>();
-
         BuildingSlot[] slots = FindObjectsByType<BuildingSlot>();
         WaveDefinition definition = waveController.CurrentWaveDefinition;
-        if (definition != null && definition.Demands != null)
+        if (definition == null || definition.Demands == null) return resolved;
+
+        foreach (NeedDemand demand in definition.Demands)
         {
-            foreach (NeedDemand demand in definition.Demands)
+            if (demand.units <= 0 || !waveController.IsNeedUnlocked(demand.need)) continue;
+            string expectedKey = BuildingKeyFor(demand.need);
+            foreach (BuildingSlot slot in slots)
             {
-                if (demand.units <= 0)
-                    continue;
-
-                string expectedKey = BuildingKeyFor(demand.need);
-                foreach (BuildingSlot slot in slots)
+                if (slot == null) continue;
+                if (MatchesBuilding(slot.BuildingKey, expectedKey) || MatchesBuilding(slot.gameObject.name, expectedKey))
                 {
-                    if (slot == null)
-                        continue;
-                    if (MatchesBuilding(slot.BuildingKey, expectedKey) || MatchesBuilding(slot.gameObject.name, expectedKey))
-                    {
-                        resolved[demand.need] = slot.transform;
-                        break;
-                    }
+                    resolved[demand.need] = slot.transform;
+                    break;
                 }
-
-                if (!resolved.ContainsKey(demand.need))
-                    Debug.LogError($"GuestSpawner: no destination building is assigned for {demand.need}.", this);
+            }
+            if (!resolved.ContainsKey(demand.need))
+            {
+                Debug.LogWarning($"GuestSpawner: no destination building is assigned for unlocked service {demand.need}.", this);
             }
         }
         return resolved;
@@ -239,8 +209,7 @@ public sealed class GuestSpawner : MonoBehaviour
 
     private static bool MatchesBuilding(string candidate, string expected)
     {
-        if (string.IsNullOrWhiteSpace(candidate))
-            return false;
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
         string normalized = new string(candidate.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
         return normalized.StartsWith(expected, StringComparison.Ordinal);
     }
@@ -283,10 +252,12 @@ public sealed class GuestSpawner : MonoBehaviour
                 Destroy(guest.gameObject);
         spawnedGuests.Clear();
         guestsByIndex = Array.Empty<GuestMovement>();
-        visitsByGuest = Array.Empty<List<ScheduledVisit>>();
-        nextVisitByGuest = Array.Empty<int>();
+        pendingVisits.Clear();
+        routedNeedUnits.Clear();
+        needDestinations.Clear();
         targetGuestCount = 0;
         nextGuestIndex = 0;
+        nextVisualRecipient = 0;
         returningGuests = false;
     }
 }

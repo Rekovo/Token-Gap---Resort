@@ -10,13 +10,21 @@ public readonly struct WaveNeedSnapshot
     public ResortNeed Need { get; }
     public int Completed { get; }
     public int Total { get; }
+    public int Generated => Total;
+    public int Arrived { get; }
+    public int Waiting { get; }
+    public int Processing { get; }
     public WaveNeedStatus Status { get; }
 
-    public WaveNeedSnapshot(ResortNeed need, int completed, int total, WaveNeedStatus status)
+    public WaveNeedSnapshot(ResortNeed need, int completed, int total, int arrived,
+        int waiting, int processing, WaveNeedStatus status)
     {
         Need = need;
         Completed = completed;
         Total = total;
+        Arrived = arrived;
+        Waiting = waiting;
+        Processing = processing;
         Status = status;
     }
 }
@@ -58,8 +66,14 @@ public sealed class WaveSimulation
     {
         public ResortNeed Need;
         public int Total;
+        public int BaseTotal;
+        public int BaseArrived;
         public int Arrived;
         public int Served;
+        public int RushTotal;
+        public int RushArrived;
+        public float RushStart;
+        public float RushDuration;
         public int Capacity;
         public bool Staffed;
         public float BoostRemaining;
@@ -96,6 +110,8 @@ public sealed class WaveSimulation
     private bool started;
 
     public event Action<ResortNeed, int, int> NeedProgressChanged;
+    public event Action<WaveNeedSnapshot> NeedStateChanged;
+    public event Action<ResortNeed, int> NeedArrived;
     public event Action<ResortNeed, WaveNeedStatus, int> NeedStatusChanged;
     public event Action<float> ArrivalProgressChanged;
     public event Action<float, int, int> Completed;
@@ -115,7 +131,7 @@ public sealed class WaveSimulation
                 var work = new List<string>(state.ServicePlaces.Count);
                 foreach (ServicePlace place in state.ServicePlaces)
                     work.Add(place.Occupied ? place.RemainingWork.ToString("F2") : "empty");
-                parts.Add($"{state.Need}: {state.Served}/{state.Total} filled, waiting {state.Waiting}, in_service {state.InService}, outstanding {state.Outstanding}, places [{string.Join(",", work)}], rate {ServiceRate(state):F3}/s, staffed {state.Staffed}");
+                parts.Add($"{state.Need}: generated {state.Total}, arrived {state.Arrived}, waiting {state.Waiting}, processing {state.InService}, completed {state.Served}, outstanding {state.Outstanding}, places [{string.Join(",", work)}], rate {ServiceRate(state):F3}/s, staffed {state.Staffed}");
             }
             return string.Join("; ", parts);
         }
@@ -137,7 +153,7 @@ public sealed class WaveSimulation
         if (destination == null) throw new ArgumentNullException(nameof(destination));
         destination.Clear();
         foreach (NeedState state in needs)
-            destination.Add(new WaveNeedSnapshot(state.Need, state.Served, state.Total, state.Status));
+            destination.Add(CreateSnapshot(state));
     }
 
     public bool TryGetServicePerformance(ResortNeed need, out ServicePerformance performance)
@@ -166,7 +182,7 @@ public sealed class WaveSimulation
         return state == null ? Array.Empty<float>() : state.WaitingTimeHistory.ToArray();
     }
 
-    public void Start(WaveDefinition definition)
+    public void Start(WaveDefinition definition, ISet<ResortNeed> activeNeeds = null)
     {
         if (definition == null) throw new ArgumentNullException(nameof(definition));
         if (definition.Demands == null || definition.Demands.Length == 0)
@@ -175,8 +191,15 @@ public sealed class WaveSimulation
         needs.Clear();
         foreach (NeedDemand demand in definition.Demands)
         {
+            if (activeNeeds != null && !activeNeeds.Contains(demand.need)) continue;
             if (demand.units <= 0) continue;
-            var state = new NeedState { Need = demand.need, Total = demand.units, Capacity = config.CapacityForLevel(1) };
+            var state = new NeedState
+            {
+                Need = demand.need,
+                Total = demand.units,
+                BaseTotal = demand.units,
+                Capacity = config.CapacityForLevel(1)
+            };
             for (int i = 0; i < state.Capacity; i++) state.ServicePlaces.Add(new ServicePlace());
             needs.Add(state);
         }
@@ -187,7 +210,22 @@ public sealed class WaveSimulation
         IsActive = needs.Count > 0;
         AddArrivals();
         DispatchAll();
+        foreach (NeedState state in needs) Notify(state);
         if (!IsActive) Complete();
+    }
+
+    /// <summary>Schedules additional need units without changing the normal arrival curve.</summary>
+    public bool AddSuddenRush(ResortNeed need, int units, float startSeconds, float durationSeconds)
+    {
+        NeedState state = FindNeed(need);
+        if (!IsActive || state == null || units <= 0 || state.RushTotal > 0) return false;
+
+        state.RushTotal = units;
+        state.Total += units;
+        state.RushStart = Mathf.Max(0f, startSeconds);
+        state.RushDuration = Mathf.Max(0.1f, durationSeconds);
+        Notify(state);
+        return true;
     }
 
     public bool SetBuilding(ResortNeed need, int level, bool staffed)
@@ -296,14 +334,30 @@ public sealed class WaveSimulation
     {
         foreach (NeedState state in needs)
         {
-            while (state.Arrived < state.Total)
+            while (state.BaseArrived < state.BaseTotal)
             {
-                float arrivalTime = config.NeedArrivalWindow * state.Arrived / state.Total;
+                float arrivalTime = config.NeedArrivalWindow * (state.BaseArrived + 1) / state.BaseTotal;
                 if (arrivalTime > time + 0.0001f) break;
-                state.Queue.Enqueue(arrivalTime);
-                state.Arrived++;
+                ReleaseNeedUnit(state, arrivalTime);
+                state.BaseArrived++;
+            }
+
+            while (state.RushArrived < state.RushTotal)
+            {
+                float arrivalTime = state.RushStart + state.RushDuration * (state.RushArrived + 1) / state.RushTotal;
+                if (arrivalTime > time + 0.0001f) break;
+                ReleaseNeedUnit(state, arrivalTime);
+                state.RushArrived++;
             }
         }
+    }
+
+    private void ReleaseNeedUnit(NeedState state, float arrivalTime)
+    {
+        int unitIndex = state.Arrived;
+        state.Queue.Enqueue(arrivalTime);
+        state.Arrived++;
+        NeedArrived?.Invoke(state.Need, unitIndex);
     }
 
     private void CompleteServices(NeedState state)
@@ -388,7 +442,14 @@ public sealed class WaveSimulation
     }
 
     private NeedState FindNeed(ResortNeed need) => needs.Find(n => n.Need == need);
-    private void Notify(NeedState state) => NeedProgressChanged?.Invoke(state.Need, state.Served, state.Total);
+    private WaveNeedSnapshot CreateSnapshot(NeedState state) => new WaveNeedSnapshot(
+        state.Need, state.Served, state.Total, state.Arrived, state.Waiting, state.InService, state.Status);
+
+    private void Notify(NeedState state)
+    {
+        NeedProgressChanged?.Invoke(state.Need, state.Served, state.Total);
+        NeedStateChanged?.Invoke(CreateSnapshot(state));
+    }
 
     private void Complete()
     {

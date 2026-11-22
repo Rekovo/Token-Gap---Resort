@@ -223,14 +223,57 @@ public class ResortDatabase : IDisposable
         bool moved = false;
         db.RunInTransaction(() =>
         {
+            int unlockedCount = db.ExecuteScalar<int>("SELECT COUNT(*) FROM BUILDING_STATE WHERE player_id = ? AND is_unlocked = 1", playerId);
+            int assignedCount = db.ExecuteScalar<int>("SELECT COALESCE(SUM(workers_assigned), 0) FROM BUILDING_STATE WHERE player_id = ? AND is_unlocked = 1", playerId);
+            if (unlockedCount < 2 || assignedCount != unlockedCount - 1) return;
+
             int source = db.ExecuteScalar<int>("SELECT workers_assigned FROM BUILDING_STATE WHERE player_id = ? AND building_key = ? AND is_unlocked = 1", playerId, fromBuildingKey);
             int target = db.ExecuteScalar<int>("SELECT workers_assigned FROM BUILDING_STATE WHERE player_id = ? AND building_key = ? AND is_unlocked = 1", playerId, toBuildingKey);
-            if (source != 1 || target != 0) return;
+            int targetSlots = db.ExecuteScalar<int>("SELECT worker_slots FROM BUILDING_STATE WHERE player_id = ? AND building_key = ? AND is_unlocked = 1", playerId, toBuildingKey);
+            if (source != 1 || target != 0 || targetSlots != 1) return;
             db.Execute("UPDATE BUILDING_STATE SET workers_assigned = 0 WHERE player_id = ? AND building_key = ?", playerId, fromBuildingKey);
             db.Execute("UPDATE BUILDING_STATE SET workers_assigned = 1 WHERE player_id = ? AND building_key = ?", playerId, toBuildingKey);
             moved = true;
         });
         return moved;
+    }
+
+    /// <summary>Purchases an unlocked-by-progression service and places its new Worker atomically.</summary>
+    public bool TryUnlockBuilding(string playerId, string buildingKey, int coinCost)
+    {
+        if (coinCost < 0) throw new ArgumentOutOfRangeException(nameof(coinCost));
+        bool unlocked = false;
+        db.RunInTransaction(() =>
+        {
+            int requiredWave = db.ExecuteScalar<int>(
+                "SELECT unlock_wave FROM BUILDING_DEFINITION WHERE building_key = ?", buildingKey);
+            int wasUnlocked = db.ExecuteScalar<int>(
+                "SELECT is_unlocked FROM BUILDING_STATE WHERE player_id = ? AND building_key = ?", playerId, buildingKey);
+            if (requiredWave <= 1 || wasUnlocked != 0) return;
+
+            int highestWave = GetHighestWaveCompleted(playerId);
+            if (highestWave < requiredWave) return;
+
+            int unlockedCount = db.ExecuteScalar<int>(
+                "SELECT COUNT(*) FROM BUILDING_STATE WHERE player_id = ? AND is_unlocked = 1", playerId);
+            int assignedCount = db.ExecuteScalar<int>(
+                "SELECT COALESCE(SUM(workers_assigned), 0) FROM BUILDING_STATE WHERE player_id = ? AND is_unlocked = 1", playerId);
+            if (assignedCount != unlockedCount - 1) return;
+
+            if (coinCost > 0)
+            {
+                int spent = db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount - ? WHERE player_id = ? AND currency_code = 'COINS' AND amount >= ?",
+                    coinCost, playerId, coinCost);
+                if (spent == 0) return;
+                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, created_at) VALUES (?, 'COINS', ?, 'BUILDING_UNLOCK', ?)",
+                    playerId, -coinCost, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            }
+
+            int changed = db.Execute("UPDATE BUILDING_STATE SET is_unlocked = 1, level = 1, workers_assigned = 1 WHERE player_id = ? AND building_key = ? AND is_unlocked = 0 AND worker_slots = 1",
+                playerId, buildingKey);
+            if (changed == 1) unlocked = true;
+        });
+        return unlocked;
     }
 
     public bool TryUpgradeBuilding(string playerId, string buildingKey, int coinCost)
@@ -258,6 +301,8 @@ public class ResortDatabase : IDisposable
     }
 
     public int GetSchemaVersion() => db.ExecuteScalar<int>("PRAGMA user_version;");
+    public int GetHighestWaveCompleted(string playerId) => db.ExecuteScalar<int>(
+        "SELECT highest_wave_completed FROM PLAYER WHERE player_id = ?", playerId);
     public bool ForeignKeysEnabled() => db.ExecuteScalar<int>("PRAGMA foreign_keys;") == 1;
 
 
