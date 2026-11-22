@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 public class GuestWaveController : MonoBehaviour
@@ -27,6 +28,23 @@ public class GuestWaveController : MonoBehaviour
     public WaveDefinition CurrentWaveDefinition => waveDefinition;
     public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
     public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
+    public bool AreNeedArrivalsClosed => simulation != null && simulation.ArrivalsEnded;
+
+    /// <summary>Copies live demand for UI initialization and refresh after reopening a menu.</summary>
+    public void GetNeedSnapshots(List<WaveNeedSnapshot> destination)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+        if (simulation == null) destination.Clear();
+        else simulation.GetNeedSnapshots(destination);
+    }
+
+    /// <summary>Uses saved building availability; demand generation remains owned by SCRUM-90.</summary>
+    public bool IsNeedUnlocked(ResortNeed need)
+    {
+        if (database == null) return false;
+        BuildingStateRecord state = database.GetBuildingState(playerId, BuildingKeyFor(need));
+        return state != null && state.is_unlocked == 1;
+    }
 
     private float returnWaitTimer;
     private WaveSimulation simulation;

@@ -4,6 +4,23 @@ using UnityEngine;
 
 public enum WaveNeedStatus { Ok, Bottleneck, Recovering, Satisfied }
 
+/// <summary>A read-only view of authoritative service demand for presentation.</summary>
+public readonly struct WaveNeedSnapshot
+{
+    public ResortNeed Need { get; }
+    public int Completed { get; }
+    public int Total { get; }
+    public WaveNeedStatus Status { get; }
+
+    public WaveNeedSnapshot(ResortNeed need, int completed, int total, WaveNeedStatus status)
+    {
+        Need = need;
+        Completed = completed;
+        Total = total;
+        Status = status;
+    }
+}
+
 /// <summary>Current effective service performance exposed to UI and other systems.</summary>
 public readonly struct ServicePerformance
 {
@@ -113,6 +130,15 @@ public sealed class WaveSimulation
     public int InServiceCount(ResortNeed need) => FindNeed(need)?.InService ?? 0;
     public int OutstandingCount(ResortNeed need) => FindNeed(need)?.Outstanding ?? 0;
     public int FilledCount(ResortNeed need) => FindNeed(need)?.Served ?? 0;
+
+    /// <summary>Copies current simulation values so a UI opened mid-wave can initialize immediately.</summary>
+    public void GetNeedSnapshots(List<WaveNeedSnapshot> destination)
+    {
+        if (destination == null) throw new ArgumentNullException(nameof(destination));
+        destination.Clear();
+        foreach (NeedState state in needs)
+            destination.Add(new WaveNeedSnapshot(state.Need, state.Served, state.Total, state.Status));
+    }
 
     public bool TryGetServicePerformance(ResortNeed need, out ServicePerformance performance)
     {
