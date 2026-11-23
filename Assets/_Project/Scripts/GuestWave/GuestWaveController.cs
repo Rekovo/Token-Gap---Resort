@@ -18,6 +18,8 @@ public class GuestWaveController : MonoBehaviour
     public event Action<int, int> OnGuestCountChanged;
     public event Action<float> OnArrivalProgressChanged;
     public event Action<ResortNeed, int, int> OnNeedProgressChanged;
+    public event Action<WaveNeedSnapshot> OnNeedStateChanged;
+    public event Action<ResortNeed, int> OnNeedArrived;
     public event Action<ResortNeed, WaveNeedStatus, int> OnNeedStatusChanged;
     public event Action<ServicePerformance> OnServicePerformanceChanged;
     public int TotalGuests { get; private set; }
@@ -25,7 +27,7 @@ public class GuestWaveController : MonoBehaviour
     public int GuestsLeft { get; private set; }
     public float Elapsed => simulation != null ? simulation.Elapsed : 0f;
     public string ServiceDiagnostics => simulation != null ? simulation.DrainStatus : "Wave not running.";
-    public WaveDefinition CurrentWaveDefinition => waveDefinition;
+    public WaveDefinition CurrentWaveDefinition => activeWaveDefinition ?? ResolveNextWaveDefinition();
     public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
     public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
     public bool AreNeedArrivalsClosed => simulation != null && simulation.ArrivalsEnded;
@@ -49,6 +51,9 @@ public class GuestWaveController : MonoBehaviour
     private float returnWaitTimer;
     private WaveSimulation simulation;
     private ResortDatabase database;
+    private WaveDefinition activeWaveDefinition;
+    private readonly HashSet<ResortNeed> activeWaveNeeds = new HashSet<ResortNeed>();
+    private bool suddenRushScheduled;
     private bool simulationFinished;
     private float finalSatisfaction;
     private int finalRating;
@@ -59,13 +64,15 @@ public class GuestWaveController : MonoBehaviour
     {
         database = new ResortDatabase();
         database.CreateNewPlayer(playerId);
-        TotalGuests = waveDefinition != null ? waveDefinition.VisualGuestCount : 0;
+        WaveDefinition next = ResolveNextWaveDefinition();
+        TotalGuests = next != null ? next.VisualGuestCount : 0;
     }
 
     private void Update()
     {
         if ((CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving) && simulation != null)
         {
+            ScheduleSuddenRushIfDue(Time.deltaTime);
             simulation.Tick(Time.deltaTime);
             if (simulation.IsActive && simulation.Elapsed >= WaveDuration && simulation.Elapsed >= nextDrainDiagnosticTime)
             {
@@ -82,14 +89,16 @@ public class GuestWaveController : MonoBehaviour
 
     public void StartWaveFromButton()
     {
-        if (waveDefinition != null) StartWave(waveDefinition.VisualGuestCount);
-        else Debug.LogError("GuestWaveController requires a WaveDefinition asset.", this);
+        WaveDefinition next = ResolveNextWaveDefinition();
+        if (next != null) StartWave(next.VisualGuestCount);
+        else Debug.LogError("All scripted waves are complete or no WaveDefinition is configured.", this);
     }
 
     public void StartWave(int guestCount)
     {
         if (CurrentState != GuestWaveState.Ready || guestCount <= 0) return;
-        if (balanceConfig == null || waveDefinition == null)
+        activeWaveDefinition = ResolveNextWaveDefinition();
+        if (balanceConfig == null || activeWaveDefinition == null)
         {
             Debug.LogError("Assign both WaveBalanceConfig and WaveDefinition assets before starting a wave.", this);
             return;
@@ -97,16 +106,22 @@ public class GuestWaveController : MonoBehaviour
 
         simulation = new WaveSimulation(balanceConfig);
         simulation.NeedProgressChanged += (need, served, total) => OnNeedProgressChanged?.Invoke(need, served, total);
+        simulation.NeedStateChanged += snapshot => OnNeedStateChanged?.Invoke(snapshot);
+        simulation.NeedArrived += (need, unitIndex) => OnNeedArrived?.Invoke(need, unitIndex);
         simulation.NeedStatusChanged += (need, status, queue) => OnNeedStatusChanged?.Invoke(need, status, queue);
         simulation.ArrivalProgressChanged += progress => OnArrivalProgressChanged?.Invoke(progress);
         simulation.PerformanceChanged += performance => OnServicePerformanceChanged?.Invoke(performance);
         simulation.Completed += HandleSimulationCompleted;
-        simulation.Start(waveDefinition);
-        if (database != null && waveDefinition.Demands != null)
+        activeWaveNeeds.Clear();
+        suddenRushScheduled = false;
+        if (activeWaveDefinition.Demands != null)
         {
-            foreach (var demand in waveDefinition.Demands)
-                RefreshBuildingPerformance(demand.need);
+            foreach (NeedDemand demand in activeWaveDefinition.Demands)
+                if (demand.units > 0 && IsNeedUnlocked(demand.need)) activeWaveNeeds.Add(demand.need);
         }
+        simulation.Start(activeWaveDefinition, activeWaveNeeds);
+
+        foreach (ResortNeed need in activeWaveNeeds) RefreshBuildingPerformance(need);
 
         TotalGuests = guestCount;
         GuestsArrived = 0;
@@ -233,8 +248,8 @@ public class GuestWaveController : MonoBehaviour
     private void FinalizeWave()
     {
         if (CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving) return;
-        if (database != null && waveDefinition != null)
-            database.RecordWaveCompletion(playerId, waveDefinition.WaveNumber, finalCoins);
+        if (database != null && activeWaveDefinition != null)
+            database.RecordWaveCompletion(playerId, activeWaveDefinition.WaveNumber, finalCoins);
         ChangeState(GuestWaveState.Completed);
         OnWaveResult?.Invoke(finalSatisfaction, finalRating, finalCoins);
     }
@@ -277,8 +292,66 @@ public class GuestWaveController : MonoBehaviour
         if (CurrentState == GuestWaveState.Completed)
         {
             simulation = null;
+            activeWaveDefinition = null;
+            WaveDefinition next = ResolveNextWaveDefinition();
+            TotalGuests = next != null ? next.VisualGuestCount : 0;
             ChangeState(GuestWaveState.Ready);
         }
+    }
+
+    /// <summary>Unlocks a purchased service and assigns its one new Worker in the same save transaction.</summary>
+    public bool TryUnlockServiceBuilding(string buildingKey)
+    {
+        if (database == null || CurrentState == GuestWaveState.Active || CurrentState == GuestWaveState.Resolving
+            || CurrentState == GuestWaveState.Paused) return false;
+        int coinCost = GetBuildingUnlockCost(buildingKey);
+        if (coinCost < 0 || !database.TryUnlockBuilding(playerId, buildingKey, coinCost)) return false;
+        RefreshBuildingPerformance(buildingKey);
+        return true;
+    }
+
+    public int GetBuildingUnlockCost(string buildingKey) =>
+        balanceConfig != null ? balanceConfig.BuildingUnlockCost(buildingKey) : -1;
+
+    private WaveDefinition ResolveNextWaveDefinition()
+    {
+        if (balanceConfig == null) return waveDefinition;
+        int nextWaveNumber = database != null ? database.GetHighestWaveCompleted(playerId) + 1 : 1;
+        WaveDefinition configured = balanceConfig.GetWaveDefinition(nextWaveNumber);
+        if (configured != null) return configured;
+        return waveDefinition != null && waveDefinition.WaveNumber == nextWaveNumber ? waveDefinition : null;
+    }
+
+    private void ScheduleSuddenRushIfDue(float deltaTime)
+    {
+        if (suddenRushScheduled || activeWaveDefinition == null || activeWaveDefinition.SuddenRushUnits <= 0
+            || simulation == null || simulation.Elapsed + deltaTime < activeWaveDefinition.SuddenRushStartSeconds)
+            return;
+
+        if (!TryFindUnstaffedNeed(out ResortNeed rushNeed))
+        {
+            Debug.LogWarning($"Wave {activeWaveDefinition.WaveNumber} has a Sudden Rush but no unlocked unstaffed service with demand.", this);
+            suddenRushScheduled = true;
+            return;
+        }
+
+        suddenRushScheduled = simulation.AddSuddenRush(rushNeed, activeWaveDefinition.SuddenRushUnits,
+            activeWaveDefinition.SuddenRushStartSeconds, activeWaveDefinition.SuddenRushDurationSeconds);
+    }
+
+    private bool TryFindUnstaffedNeed(out ResortNeed need)
+    {
+        foreach (ResortNeed candidate in activeWaveNeeds)
+        {
+            BuildingStateRecord state = database.GetBuildingState(playerId, BuildingKeyFor(candidate));
+            if (state != null && state.is_unlocked == 1 && state.workers_assigned == 0)
+            {
+                need = candidate;
+                return true;
+            }
+        }
+        need = default;
+        return false;
     }
 
     public void PauseWave()

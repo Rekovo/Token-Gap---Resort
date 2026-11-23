@@ -1,10 +1,16 @@
 using UnityEngine;
+using System;
 
 [CreateAssetMenu(menuName = "ResortEmpire/Wave Balance Config", fileName = "WaveBalanceConfig")]
 public sealed class WaveBalanceConfig : ScriptableObject
 {
     [Header("Wave timing")]
     [SerializeField, Min(1f)] private float waveTimer = 90f;
+    [Header("Scripted waves")]
+    [SerializeField] private WaveDefinition[] scriptedWaves = Array.Empty<WaveDefinition>();
+    [Header("Building unlocks")]
+    [SerializeField, Min(0)] private int poolUnlockCost = 1200;
+    [SerializeField, Min(0)] private int bungalowsUnlockCost = 2500;
     [Header("Building service")]
     [SerializeField, Min(0.1f)] private float serviceTime = 12f;
     [SerializeField, Range(0.05f, 1f)] private float utilizationStaffed = 1f;
@@ -29,6 +35,23 @@ public sealed class WaveBalanceConfig : ScriptableObject
     [SerializeField] private float[] coinsRatingMultipliers = { 0.4f, 0.6f, 0.8f, 1f, 1.2f, 1.3f };
 
     public float WaveTimer => waveTimer;
+    public WaveDefinition GetWaveDefinition(int waveNumber)
+    {
+        if (scriptedWaves == null) return null;
+        foreach (WaveDefinition definition in scriptedWaves)
+            if (definition != null && definition.WaveNumber == waveNumber) return definition;
+        return null;
+    }
+    public int ScriptedWaveCount => scriptedWaves == null ? 0 : scriptedWaves.Length;
+    public int BuildingUnlockCost(string buildingKey)
+    {
+        switch (buildingKey)
+        {
+            case "POOL": return poolUnlockCost;
+            case "BUNGALOWS": return bungalowsUnlockCost;
+            default: return -1;
+        }
+    }
     public float NeedArrivalWindow => waveTimer;
     public float ServiceTime => serviceTime;
     public float UtilizationStaffed => utilizationStaffed;
@@ -52,6 +75,13 @@ public sealed class WaveBalanceConfig : ScriptableObject
 
     private void OnValidate()
     {
+        if (scriptedWaves == null || scriptedWaves.Length != 8)
+            Debug.LogError("The prototype balance config must reference all eight scripted waves.", this);
+        else
+            for (int i = 0; i < scriptedWaves.Length; i++)
+                if (scriptedWaves[i] == null || scriptedWaves[i].WaveNumber != i + 1)
+                    Debug.LogError($"Scripted wave slot {i + 1} must reference Wave {i + 1}.", this);
+
         if (capacityPerLevel == null || capacityPerLevel.Length != 3 || capacityPerLevel[0] <= 0 || capacityPerLevel[1] <= capacityPerLevel[0] || capacityPerLevel[2] <= capacityPerLevel[1])
             Debug.LogError("Prototype capacity must contain three increasing positive levels (3, 5, 7).", this);
         if (ratingThresholds == null || ratingThresholds.Length != 6 || coinsRatingMultipliers == null || coinsRatingMultipliers.Length != 6)

@@ -54,14 +54,19 @@ public class BuildingSlot : MonoBehaviour
 
     public bool TryMoveWorkerTo(BuildingSlot target)
     {
-        if (target == null || database == null || target.database == null || !IsUnlocked || target.HasWorker)
+        if (target == null || target == this || database == null || target.database == null
+            || !IsUnlocked || !target.IsUnlocked || !HasWorker || target.HasWorker)
+            return false;
+        GuestWaveController controller = waveController != null ? waveController : target.waveController;
+        if (controller == null) controller = FindAnyObjectByType<GuestWaveController>();
+        if (controller != null && controller.CurrentState != GuestWaveState.Ready
+            && controller.CurrentState != GuestWaveState.Active
+            && controller.CurrentState != GuestWaveState.Resolving)
             return false;
         if (!database.MoveWorker("test-player-001", buildingKey, target.buildingKey)) return false;
         RefreshPersistedState();
         target.RefreshPersistedState();
 
-        GuestWaveController controller = waveController != null ? waveController : target.waveController;
-        if (controller == null) controller = FindAnyObjectByType<GuestWaveController>();
         if (controller != null)
         {
             // Re-read both records after the successful transaction so the simulation
@@ -69,6 +74,20 @@ public class BuildingSlot : MonoBehaviour
             controller.RefreshBuildingPerformance(buildingKey);
             controller.RefreshBuildingPerformance(target.buildingKey);
         }
+        return true;
+    }
+
+    /// <summary>Runs the prototype purchase/unlock transaction and refreshes this building's saved state.</summary>
+    public bool TryPurchaseUnlock()
+    {
+        if (database == null || IsUnlocked || string.IsNullOrWhiteSpace(buildingKey)) return false;
+        GuestWaveController controller = waveController != null ? waveController : FindAnyObjectByType<GuestWaveController>();
+        bool succeeded = controller != null
+            && controller.TryUnlockServiceBuilding(buildingKey);
+        if (!succeeded) return false;
+
+        RefreshPersistedState();
+        GetComponent<BuildingWorkerIndicator>()?.RefreshFromSave();
         return true;
     }
 
