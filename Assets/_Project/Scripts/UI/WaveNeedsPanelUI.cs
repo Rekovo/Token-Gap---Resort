@@ -28,6 +28,7 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
     private readonly List<WaveNeedSnapshot> snapshots = new List<WaveNeedSnapshot>(5);
     private readonly Dictionary<ResortNeed, WaveNeedRowUI> rows = new Dictionary<ResortNeed, WaveNeedRowUI>(5);
     private readonly Dictionary<ResortNeed, MiniNeedRow> miniRows = new Dictionary<ResortNeed, MiniNeedRow>(5);
+    private readonly Dictionary<GameObject, bool> sceneChildStates = new Dictionary<GameObject, bool>();
     private readonly HashSet<ResortNeed> filteredLockedNeeds = new HashSet<ResortNeed>();
     private RectTransform expandedContent;
     private RectTransform compactContent;
@@ -35,6 +36,7 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
     private TMP_Text compactArrivalText;
     private TMP_Text toggleText;
     private Button toggleButton;
+    private GameObject collapseControl;
     private Action<ResortNeed> managementOpener;
     private bool waveOverlayMode;
     private bool expanded = true;
@@ -100,7 +102,11 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
     private void BuildUI()
     {
         RectTransform panel = (RectTransform)transform;
+        foreach (Transform child in panel)
+            sceneChildStates[child.gameObject] = child.gameObject.activeSelf;
         panel.sizeDelta = new Vector2(900f, 740f);
+        Image panelBackground = GetComponent<Image>();
+        if (panelBackground != null) panelBackground.color = new Color(0.11f, 0.25f, 0.22f, 0.985f);
 
         GameObject expandedObject = new GameObject("ExpandedWaveNeedsContent", typeof(RectTransform));
         expandedContent = (RectTransform)expandedObject.transform;
@@ -119,12 +125,12 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
         compactContent.offsetMax = Vector2.zero;
 
         arrivalText = WaveNeedRowUI.CreateText("WaveNeedsStatus", expandedContent,
-            new Vector2(0f, 245f), new Vector2(820f, 32f), 22f, TextAlignmentOptions.Center);
-        arrivalText.color = new Color(0.87f, 0.96f, 0.91f);
+            new Vector2(-80f, 245f), new Vector2(620f, 36f), 24f, TextAlignmentOptions.Center);
+        arrivalText.color = Color.white;
 
-        GameObject collapseObject = CreateButton("CollapseWaveNeeds", expandedContent,
-            new Vector2(377f, 245f), new Vector2(94f, 32f), "CLOSE");
-        collapseObject.GetComponent<Button>().onClick.AddListener(CollapseOrClose);
+        collapseControl = CreateButton("CollapseWaveNeeds", expandedContent,
+            new Vector2(340f, 245f), new Vector2(120f, 48f), "CLOSE");
+        collapseControl.GetComponent<Button>().onClick.AddListener(CollapseOrClose);
 
         foreach (ResortNeed need in WaveNeedPresentation.StableOrder)
         {
@@ -147,8 +153,8 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
         toggleText = miniToggle.GetComponentInChildren<TMP_Text>();
         toggleButton.onClick.AddListener(() => SetExpanded(true));
         compactArrivalText = WaveNeedRowUI.CreateText("CompactWaveStatus", compactContent,
-            new Vector2(0f, 19f), new Vector2(850f, 20f), 14f, TextAlignmentOptions.Center);
-        compactArrivalText.color = new Color(0.88f, 0.95f, 0.89f);
+            new Vector2(0f, 19f), new Vector2(850f, 24f), 16f, TextAlignmentOptions.Center);
+        compactArrivalText.color = Color.white;
     }
 
     private MiniNeedRow BuildMiniNeed(RectTransform parent, ResortNeed need)
@@ -194,11 +200,11 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
         {
             RectTransform parent = panel.parent as RectTransform;
             float width = parent != null ? Mathf.Min(920f, parent.rect.width - 32f) : 880f;
-            float height = expanded ? 470f : 138f;
-            if (parent != null) height = expanded ? Mathf.Min(height, parent.rect.height * 0.52f) : height;
+            float height = expanded ? 650f : 138f;
+            if (parent != null && expanded) height = Mathf.Min(height, parent.rect.height - 180f);
             panel.anchorMin = panel.anchorMax = new Vector2(0.5f, 0f);
             panel.pivot = new Vector2(0.5f, 0f);
-            panel.anchoredPosition = new Vector2(0f, 18f);
+            panel.anchoredPosition = new Vector2(0f, 130f);
             panel.sizeDelta = new Vector2(Mathf.Max(320f, width), height);
         }
         else
@@ -209,7 +215,10 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
             panel.sizeDelta = new Vector2(900f, 740f);
         }
 
+        foreach (KeyValuePair<GameObject, bool> child in sceneChildStates)
+            if (child.Key != null) child.Key.SetActive(!waveOverlayMode && child.Value);
         expandedContent.gameObject.SetActive(!waveOverlayMode || expanded);
+        collapseControl.SetActive(waveOverlayMode && expanded);
         compactContent.gameObject.SetActive(waveOverlayMode && !expanded);
         if (toggleText != null) toggleText.text = "GUEST NEEDS  •  TAP TO EXPAND";
         LayoutMiniRows();
@@ -386,7 +395,7 @@ public sealed class WaveNeedsPanelUI : MonoBehaviour
         rect.SetParent(parent, false);
         Place(rect, position, size);
         Image image = buttonObject.GetComponent<Image>();
-        image.color = new Color(0.13f, 0.31f, 0.26f, 0.96f);
+        image.color = new Color(0.10f, 0.27f, 0.23f, 0.985f);
         Button button = buttonObject.GetComponent<Button>();
         button.transition = Selectable.Transition.ColorTint;
         TMP_Text text = WaveNeedRowUI.CreateText(objectName + "Label", rect, Vector2.zero,

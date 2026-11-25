@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -36,7 +37,7 @@ public class BuildingWorkerIndicator : MonoBehaviour
         hasNeed = TryNeedForBuilding(building != null ? building.BuildingKey : null, out need);
     }
 
-    private void Start()
+    private IEnumerator Start()
     {
         controller = FindAnyObjectByType<GuestWaveController>();
         CreateCapacityRings();
@@ -47,6 +48,8 @@ public class BuildingWorkerIndicator : MonoBehaviour
             controller.OnNeedStatusChanged += HandleNeedStatusChanged;
             controller.OnBuildingUpgraded += HandleBuildingUpgraded;
         }
+        // All BuildingSlot.Start calls finish before the first delayed refresh.
+        yield return null;
         RefreshFromSave();
         RefreshLiveSnapshot();
     }

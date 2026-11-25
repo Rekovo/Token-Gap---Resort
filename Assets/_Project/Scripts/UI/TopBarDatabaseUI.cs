@@ -13,10 +13,16 @@ public class TopBarDatabaseUI : MonoBehaviour
     private string playerId = "test-player-001";
     private TMP_Text generatedRewardText;
 
-    private void Awake()
+    private void EnsureDatabase()
     {
+        if (database != null) return;
         database = new ResortDatabase();
         database.CreateNewPlayer(playerId);
+    }
+
+    private void Awake()
+    {
+        EnsureDatabase();
         if (waveRewardText == null && moneyText != null)
         {
             GameObject rewardObject = new GameObject("WaveRewardText", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
@@ -39,6 +45,7 @@ public class TopBarDatabaseUI : MonoBehaviour
 
     private void OnEnable()
     {
+        EnsureDatabase();
         if (waveController == null) waveController = FindAnyObjectByType<GuestWaveController>();
         if (waveController != null)
         {
@@ -46,6 +53,7 @@ public class TopBarDatabaseUI : MonoBehaviour
             waveController.OnWaveStarted += HandleWaveStarted;
             waveController.OnWaveStateChanged += HandleWaveStateChanged;
             waveController.OnGuestCountChanged += HandleGuestCountChanged;
+            waveController.OnCurrencyChanged += UpdateMoney;
         }
         UpdateMoney();
     }
@@ -58,12 +66,12 @@ public class TopBarDatabaseUI : MonoBehaviour
             waveController.OnWaveStarted -= HandleWaveStarted;
             waveController.OnWaveStateChanged -= HandleWaveStateChanged;
             waveController.OnGuestCountChanged -= HandleGuestCountChanged;
+            waveController.OnCurrencyChanged -= UpdateMoney;
         }
     }
 
     private void HandleWaveResult(float satisfaction, int rating, int coins)
     {
-        UpdateMoney();
         if (waveRewardText != null) waveRewardText.text = $"+{coins}";
     }
 
@@ -78,6 +86,7 @@ public class TopBarDatabaseUI : MonoBehaviour
 
     public void UpdateMoney()
     {
+        EnsureDatabase();
         int coins = database.GetCurrencyAmount(playerId, "COINS");
         int energy = database.GetCurrencyAmount(playerId, "ENERGY");
         if (moneyText != null) moneyText.text = "Coins: " + coins;

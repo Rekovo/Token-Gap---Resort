@@ -122,12 +122,14 @@ public class BuildingSlot : MonoBehaviour
     public void RefreshPersistedState()
     {
         if (database == null || string.IsNullOrWhiteSpace(buildingKey)) return;
+        int previousLevel = Level;
         PersistedState = database.GetBuildingState("test-player-001", buildingKey);
-        ApplyLevelAppearance();
+        if (previousLevel != Level) ApplyLevelAppearance();
     }
 
     public void SetHighlight(bool active)
     {
+        if (highlighted == active) return;
         highlighted = active;
         ApplyLevelAppearance();
     }

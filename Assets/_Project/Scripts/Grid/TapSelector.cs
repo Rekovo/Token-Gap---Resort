@@ -73,6 +73,12 @@ public class TapSelector : MonoBehaviour
     void HandleHover()
     {
         Vector2 screenPos = pointerPosition.action.ReadValue<Vector2>();
+        if (PointerIsOverControl(screenPos))
+        {
+            if (hoveredBuilding != null) hoveredBuilding.SetHighlight(false);
+            hoveredBuilding = null;
+            return;
+        }
         Ray ray = mainCamera.ScreenPointToRay(screenPos);
         
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, selectableLayer))
@@ -119,7 +125,8 @@ public class TapSelector : MonoBehaviour
         uiHits.Clear();
         EventSystem.current.RaycastAll(new PointerEventData(EventSystem.current) { position = screenPos }, uiHits);
         foreach (RaycastResult hit in uiHits)
-            if (hit.gameObject.GetComponentInParent<Selectable>() != null) return true;
+            if (hit.gameObject.GetComponentInParent<Selectable>() != null
+                || hit.gameObject.GetComponentInParent<WaveNeedsPanelUI>() != null) return true;
         return false;
     }
 }

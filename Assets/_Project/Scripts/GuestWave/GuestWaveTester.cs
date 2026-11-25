@@ -14,6 +14,7 @@ public class GuestWaveTester : MonoBehaviour
     private string lastDebugAction = "Ready. Start a wave with 1.";
     private string staffingReadout = "Staffing data loading...";
     private float nextStaffingReadoutTime;
+    private Vector2 debugScroll;
 
     private void Awake()
     {
@@ -247,7 +248,11 @@ public class GuestWaveTester : MonoBehaviour
         if (Time.unscaledTime >= nextStaffingReadoutTime)
             RefreshStaffingReadout();
 
-        GUILayout.BeginArea(new Rect(12f, 12f, 470f, 500f), "QA / DEVELOPMENT ONLY", GUI.skin.window);
+        float width = Mathf.Min(470f, Screen.width - 24f);
+        float height = Mathf.Max(160f, Mathf.Min(500f, Screen.height - 132f));
+        GUILayout.BeginArea(new Rect(Screen.width - width - 12f, 120f, width, height),
+            "QA / DEVELOPMENT ONLY", GUI.skin.window);
+        debugScroll = GUILayout.BeginScrollView(debugScroll);
         GUILayout.Label("QA / DEVELOPMENT ONLY — F2 hides this panel");
         GUILayout.Label($"Wave: {controller.CurrentState}   Energy: {GetEnergyBalance()}   Coins: {GetCoinBalance()}");
         GUILayout.Label("1 start | R move Worker | G +3 Energy | Q Drinks boost | 6 pause | 7 resume");
@@ -277,6 +282,7 @@ public class GuestWaveTester : MonoBehaviour
         GUILayout.Space(6f);
         GUILayout.Label("Service places (remaining base work):");
         GUILayout.Label(controller.ServiceDiagnostics);
+        GUILayout.EndScrollView();
         GUILayout.EndArea();
     }
 

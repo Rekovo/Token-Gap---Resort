@@ -15,7 +15,8 @@ public class UIManager : MonoBehaviour
     private GameObject workersReturnPanel;
 
     public bool IsAnyMenuOpen => buildMenuPanel.activeSelf || workersMenuPanel.activeSelf
-        || guestsMenuPanel.activeSelf || settingsPanel.activeSelf;
+        || (guestsMenuPanel.activeSelf && (waveNeeds == null || waveNeeds.BlocksIslandInput))
+        || settingsPanel.activeSelf;
 
     private void Awake()
     {

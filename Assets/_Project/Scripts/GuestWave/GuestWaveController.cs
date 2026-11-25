@@ -43,6 +43,7 @@ public class GuestWaveController : MonoBehaviour
     public event Action<ResortNeed, WaveNeedStatus, int> OnNeedStatusChanged;
     public event Action<ServicePerformance> OnServicePerformanceChanged;
     public event Action<BuildingUpgradeInfo> OnBuildingUpgraded;
+    public event Action OnCurrencyChanged;
     public int TotalGuests { get; private set; }
     public int GuestsArrived { get; private set; }
     public int GuestsLeft { get; private set; }
@@ -51,6 +52,7 @@ public class GuestWaveController : MonoBehaviour
     public WaveDefinition CurrentWaveDefinition => activeWaveDefinition ?? ResolveNextWaveDefinition();
     public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
     public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
+    public int CurrentCoins => database != null ? database.GetCurrencyAmount(playerId, "COINS") : 0;
     public bool AreNeedArrivalsClosed => simulation != null && simulation.ArrivalsEnded;
 
     /// <summary>Copies live demand for UI initialization and refresh after reopening a menu.</summary>
@@ -129,6 +131,7 @@ public class GuestWaveController : MonoBehaviour
 
         activeWaveCompletionToken = Guid.NewGuid().ToString("N");
         activeWaveStartedAtUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        returnWaitTimer = 0f;
 
         simulation = new WaveSimulation(balanceConfig);
         simulation.NeedProgressChanged += (need, served, total) => OnNeedProgressChanged?.Invoke(need, served, total);
@@ -240,7 +243,9 @@ public class GuestWaveController : MonoBehaviour
         int energy = database.GetCurrencyAmount(playerId, "ENERGY");
         if (!simulation.CanBoost(need, energy)) return false;
         if (!database.TrySpendCurrency(playerId, "ENERGY", balanceConfig.EnergyCostPerBoost, "WAVE_ENERGY_BOOST")) return false;
-        return simulation.TryBoost(need, energy);
+        bool boosted = simulation.TryBoost(need, energy);
+        OnCurrencyChanged?.Invoke();
+        return boosted;
     }
 
 
@@ -265,6 +270,7 @@ public class GuestWaveController : MonoBehaviour
     private void HandleSimulationCompleted(float satisfaction, int rating, int coins)
     {
         simulationFinished = true;
+        returnWaitTimer = 0f;
         if (CurrentState == GuestWaveState.Active)
             ChangeState(GuestWaveState.Resolving);
         finalSatisfaction = satisfaction;
@@ -284,6 +290,7 @@ public class GuestWaveController : MonoBehaviour
                 finalRating, finalCoins, energyReward, activeWaveCompletionToken, activeWaveStartedAtUnixSeconds);
             if (!rewardRecorded)
                 Debug.LogWarning($"Wave {activeWaveDefinition.WaveNumber} completion reward was already recorded for this run.", this);
+            else OnCurrencyChanged?.Invoke();
         }
         ChangeState(GuestWaveState.Completed);
         OnWaveResult?.Invoke(finalSatisfaction, finalRating, finalCoins);
@@ -341,6 +348,7 @@ public class GuestWaveController : MonoBehaviour
             || CurrentState == GuestWaveState.Paused) return false;
         int coinCost = GetBuildingUnlockCost(buildingKey);
         if (coinCost < 0 || !database.TryUnlockBuilding(playerId, buildingKey, coinCost)) return false;
+        OnCurrencyChanged?.Invoke();
         RefreshBuildingPerformance(buildingKey);
         return true;
     }
@@ -387,6 +395,7 @@ public class GuestWaveController : MonoBehaviour
             throw new System.InvalidOperationException("The purchased building upgrade was not persisted at its expected level.");
 
         RefreshBuildingPerformance(buildingKey);
+        OnCurrencyChanged?.Invoke();
         OnBuildingUpgraded?.Invoke(new BuildingUpgradeInfo(buildingKey, before.level,
             after.level, balanceConfig.CapacityForLevel(after.level), cost));
         return true;
