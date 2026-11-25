@@ -83,8 +83,11 @@ public sealed class WaveBalanceConfig : ScriptableObject
     }
     public int EnergyRewardForRating(int rating)
     {
-        if (energyRewardsByRating == null || energyRewardsByRating.Length != 6) return 0;
-        return energyRewardsByRating[Mathf.Clamp(rating - 1, 0, 5)];
+        if (rating < 1 || rating > 6 || energyRewardsByRating == null || energyRewardsByRating.Length != 6)
+            throw new InvalidOperationException("Energy rewards must configure all six ratings.");
+        int reward = energyRewardsByRating[rating - 1];
+        if (reward < 0) throw new InvalidOperationException("Energy rewards cannot be negative.");
+        return reward;
     }
     public int CapacityForLevel(int level) => capacityPerLevel[Mathf.Clamp(level - 1, 0, capacityPerLevel.Length - 1)];
     public float RatingThreshold(int index) => ratingThresholds[Mathf.Clamp(index, 0, ratingThresholds.Length - 1)];

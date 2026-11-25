@@ -34,6 +34,7 @@ public class GuestWaveController : MonoBehaviour
     public event Action<int> OnWaveStarted;
     public event Action OnWaveCompleted;
     public event Action<float, int, int> OnWaveResult;
+    public event Action<WaveCompletionResult> OnDetailedWaveResult;
     public event Action<GuestWaveState> OnWaveStateChanged;
     public event Action<int, int> OnGuestCountChanged;
     public event Action<float> OnArrivalProgressChanged;
@@ -45,6 +46,10 @@ public class GuestWaveController : MonoBehaviour
     public event Action<BuildingUpgradeInfo> OnBuildingUpgraded;
     public event Action OnCurrencyChanged;
     public int TotalGuests { get; private set; }
+    public WaveCompletionResult LatestCompletedResult { get; private set; }
+    public SavedWaveResult GetSavedWaveResult(string completionToken) =>
+        database?.GetCompletedWaveResult(playerId, completionToken);
+    public SavedWaveResult GetLatestSavedWaveResult() => database?.GetLatestCompletedWaveResult(playerId);
     public int GuestsArrived { get; private set; }
     public int GuestsLeft { get; private set; }
     public float Elapsed => simulation != null ? simulation.Elapsed : 0f;
@@ -80,6 +85,7 @@ public class GuestWaveController : MonoBehaviour
     private bool simulationFinished;
     private string activeWaveCompletionToken;
     private long activeWaveStartedAtUnixSeconds;
+    private float nextCompletionSaveAttemptTime;
     private float finalSatisfaction;
     private int finalRating;
     private int finalCoins;
@@ -131,6 +137,7 @@ public class GuestWaveController : MonoBehaviour
 
         activeWaveCompletionToken = Guid.NewGuid().ToString("N");
         activeWaveStartedAtUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        nextCompletionSaveAttemptTime = 0f;
         returnWaitTimer = 0f;
 
         simulation = new WaveSimulation(balanceConfig);
@@ -282,18 +289,33 @@ public class GuestWaveController : MonoBehaviour
 
     private void FinalizeWave()
     {
-        if (CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving) return;
-        if (database != null && activeWaveDefinition != null)
+        if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
+            || Time.unscaledTime < nextCompletionSaveAttemptTime) return;
+        if (database == null || activeWaveDefinition == null || simulation == null) return;
+
+        WaveCompletionResult result;
+        bool rewardRecorded;
+        try
         {
-            int energyReward = balanceConfig != null ? balanceConfig.EnergyRewardForRating(finalRating) : 0;
-            bool rewardRecorded = database.RecordWaveCompletionOnce(playerId, activeWaveDefinition.WaveNumber,
-                finalRating, finalCoins, energyReward, activeWaveCompletionToken, activeWaveStartedAtUnixSeconds);
-            if (!rewardRecorded)
-                Debug.LogWarning($"Wave {activeWaveDefinition.WaveNumber} completion reward was already recorded for this run.", this);
-            else OnCurrencyChanged?.Invoke();
+            int energyReward = balanceConfig.EnergyRewardForRating(finalRating);
+            result = new WaveCompletionResult(activeWaveDefinition.WaveNumber, activeWaveCompletionToken,
+                finalSatisfaction, finalRating, finalCoins, energyReward, simulation.FinalTotalNeedUnits,
+                simulation.FinalCompletedNeedUnits, TotalGuests, activeWaveStartedAtUnixSeconds,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), simulation.FinalNeedResults);
+            rewardRecorded = database.RecordWaveCompletionOnce(playerId, result);
         }
+        catch (Exception error)
+        {
+            nextCompletionSaveAttemptTime = Time.unscaledTime + 5f;
+            Debug.LogError($"Wave result could not be saved; completion will retry. {error}", this);
+            return;
+        }
+
+        LatestCompletedResult = result;
+        if (rewardRecorded) OnCurrencyChanged?.Invoke();
         ChangeState(GuestWaveState.Completed);
         OnWaveResult?.Invoke(finalSatisfaction, finalRating, finalCoins);
+        OnDetailedWaveResult?.Invoke(result);
     }
 
     private void ChangeState(GuestWaveState newState)

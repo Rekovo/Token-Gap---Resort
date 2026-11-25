@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using SQLite;
 using UnityEngine;
@@ -135,6 +136,11 @@ public class ResortDatabase : IDisposable
             "ALTER TABLE WAVE_RUN ADD COLUMN completion_token TEXT",
             "CREATE UNIQUE INDEX ux_wave_run_completion_token ON WAVE_RUN(completion_token) WHERE completion_token IS NOT NULL"
         },
+        new[] {
+            "ALTER TABLE WAVE_RUN ADD COLUMN total_need_units INTEGER",
+            "ALTER TABLE WAVE_RUN ADD COLUMN completed_need_units INTEGER",
+            "ALTER TABLE WAVE_RUN ADD COLUMN visual_guest_count INTEGER"
+        },
     };
 
     private void Migrate()
@@ -212,48 +218,132 @@ public class ResortDatabase : IDisposable
     /// completion token makes retries/reopening the same result idempotent, while a
     /// replayed wave can use a fresh token and receive a new reward.
     /// </summary>
-    public bool RecordWaveCompletionOnce(string playerId, int waveNumber, int rating,
-        int coinReward, int energyReward, string completionToken, long startedAtUnixSeconds)
+    public bool RecordWaveCompletionOnce(string playerId, WaveCompletionResult result)
     {
-        if (waveNumber < 1) throw new ArgumentOutOfRangeException(nameof(waveNumber));
-        if (rating < 1 || rating > 6) throw new ArgumentOutOfRangeException(nameof(rating));
-        if (coinReward < 0) throw new ArgumentOutOfRangeException(nameof(coinReward));
-        if (energyReward < 0) throw new ArgumentOutOfRangeException(nameof(energyReward));
-        if (string.IsNullOrWhiteSpace(completionToken))
-            throw new ArgumentException("A wave completion token is required.", nameof(completionToken));
-
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        ValidateWaveResult(result);
         bool recorded = false;
         db.RunInTransaction(() =>
         {
+            int existing = db.ExecuteScalar<int>("SELECT COUNT(*) FROM WAVE_RUN WHERE completion_token = ?", result.CompletionToken);
+            if (existing != 0) return;
+
             int inserted = db.Execute(@"INSERT OR IGNORE INTO WAVE_RUN
-                (player_id, wave_number, status, arrival_closed, rating, coins_awarded, energy_awarded,
-                 completion_token, started_at, completed_at)
-                VALUES (?, ?, 'COMPLETE', 1, ?, ?, ?, ?, ?, ?)",
-                playerId, waveNumber, rating, coinReward, energyReward, completionToken,
-                startedAtUnixSeconds, now);
-            if (inserted != 1) return;
+                (player_id, wave_number, status, arrival_closed, rating, satisfaction_pct,
+                 coins_awarded, energy_awarded, completion_token, started_at, completed_at,
+                 total_need_units, completed_need_units, visual_guest_count)
+                VALUES (?, ?, 'COMPLETE', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                playerId, result.WaveNumber, result.Rating, result.Satisfaction * 100f,
+                result.Coins, result.Energy, result.CompletionToken, result.StartedAtUnixSeconds,
+                result.CompletedAtUnixSeconds, result.TotalNeedUnits, result.CompletedNeedUnits,
+                result.VisualGuestCount);
+            if (inserted != 1) throw new InvalidOperationException("Completed wave could not be saved.");
 
             long waveRunId = db.ExecuteScalar<long>("SELECT last_insert_rowid();");
-            db.Execute("UPDATE PLAYER SET highest_wave_completed = MAX(highest_wave_completed, ?) WHERE player_id = ?", waveNumber, playerId);
+            foreach (WaveNeedPerformance service in result.Services)
+                db.Execute(@"INSERT INTO WAVE_NEED_RESULT
+                    (wave_run_id, need_key, demand_total, units_served, avg_contribution_pct, bottleneck_seconds)
+                    VALUES (?, ?, ?, ?, ?, ?)", waveRunId, NeedKey(service.Need), service.DemandTotal,
+                    service.UnitsServed, service.AverageContribution * 100f, service.BottleneckSeconds);
+
+            int progressed = db.Execute("UPDATE PLAYER SET highest_wave_completed = MAX(highest_wave_completed, ?) WHERE player_id = ?", result.WaveNumber, playerId);
+            if (progressed != 1) throw new InvalidOperationException("Player progression could not be saved.");
             db.Execute("INSERT OR IGNORE INTO CURRENCY_BALANCE (player_id, currency_code, amount) VALUES (?, 'COINS', 0)", playerId);
             db.Execute("INSERT OR IGNORE INTO CURRENCY_BALANCE (player_id, currency_code, amount) VALUES (?, 'ENERGY', 0)", playerId);
+            if (GetCurrencyAmount(playerId, "COINS") > int.MaxValue - result.Coins
+                || GetCurrencyAmount(playerId, "ENERGY") > int.MaxValue - result.Energy)
+                throw new OverflowException("Wave rewards exceed the supported currency balance.");
 
-            if (coinReward > 0)
+            if (result.Coins > 0)
             {
-                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'COINS'", coinReward, playerId);
-                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'COINS', ?, 'WAVE_REWARD', ?, ?)", playerId, coinReward, waveRunId, now);
+                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'COINS'", result.Coins, playerId);
+                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'COINS', ?, 'WAVE_REWARD', ?, ?)", playerId, result.Coins, waveRunId, result.CompletedAtUnixSeconds);
             }
 
-            if (energyReward > 0)
+            if (result.Energy > 0)
             {
-                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'ENERGY'", energyReward, playerId);
-                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'ENERGY', ?, 'WAVE_ENERGY_REWARD', ?, ?)", playerId, energyReward, waveRunId, now);
+                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'ENERGY'", result.Energy, playerId);
+                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'ENERGY', ?, 'WAVE_ENERGY_REWARD', ?, ?)", playerId, result.Energy, waveRunId, result.CompletedAtUnixSeconds);
             }
 
             recorded = true;
         });
         return recorded;
+    }
+
+    private static string NeedKey(ResortNeed need)
+    {
+        switch (need)
+        {
+            case ResortNeed.Rooms: return "ROOMS";
+            case ResortNeed.Drinks: return "DRINKS";
+            case ResortNeed.Food: return "FOOD";
+            case ResortNeed.Relax: return "RELAX";
+            case ResortNeed.OceanView: return "OCEAN_VIEW";
+            default: throw new ArgumentOutOfRangeException(nameof(need));
+        }
+    }
+
+    private static void ValidateWaveResult(WaveCompletionResult result)
+    {
+        if (result == null) throw new ArgumentNullException(nameof(result));
+        if (result.WaveNumber < 1 || string.IsNullOrWhiteSpace(result.CompletionToken)
+            || float.IsNaN(result.Satisfaction) || float.IsInfinity(result.Satisfaction)
+            || result.Satisfaction < 0f || result.Satisfaction > 1f
+            || result.Rating < 1 || result.Rating > 6 || result.Coins < 0 || result.Energy < 0
+            || result.TotalNeedUnits <= 0 || result.CompletedNeedUnits != result.TotalNeedUnits
+            || result.VisualGuestCount < 0 || result.StartedAtUnixSeconds <= 0
+            || result.CompletedAtUnixSeconds < result.StartedAtUnixSeconds
+            || result.Services == null || result.Services.Count == 0)
+            throw new ArgumentException("Completed wave result is invalid.", nameof(result));
+
+        int total = 0;
+        var seen = new HashSet<ResortNeed>();
+        foreach (WaveNeedPerformance service in result.Services)
+        {
+            if (!seen.Add(service.Need) || service.DemandTotal <= 0
+                || service.UnitsServed != service.DemandTotal
+                || float.IsNaN(service.AverageContribution) || float.IsInfinity(service.AverageContribution)
+                || service.AverageContribution < 0f || service.AverageContribution > 1f
+                || float.IsNaN(service.BottleneckSeconds) || float.IsInfinity(service.BottleneckSeconds)
+                || service.BottleneckSeconds < 0f)
+                throw new ArgumentException("Per-service wave result is invalid.", nameof(result));
+            NeedKey(service.Need);
+            total = checked(total + service.DemandTotal);
+        }
+        if (total != result.TotalNeedUnits)
+            throw new ArgumentException("Service totals do not match the completed wave.", nameof(result));
+    }
+
+    public SavedWaveResult GetCompletedWaveResult(string playerId, string completionToken)
+    {
+        if (string.IsNullOrWhiteSpace(completionToken)) return null;
+        var runs = db.Query<WaveRunResultRow>(@"SELECT wave_run_id, wave_number, completion_token,
+            satisfaction_pct, rating, coins_awarded, energy_awarded, started_at, completed_at,
+            total_need_units, completed_need_units, visual_guest_count
+            FROM WAVE_RUN WHERE player_id = ? AND completion_token = ? AND status = 'COMPLETE'",
+            playerId, completionToken);
+        return runs.Count == 0 ? null : ReadSavedWaveResult(runs[0]);
+    }
+
+    public SavedWaveResult GetLatestCompletedWaveResult(string playerId)
+    {
+        var runs = db.Query<WaveRunResultRow>(@"SELECT wave_run_id, wave_number, completion_token,
+            satisfaction_pct, rating, coins_awarded, energy_awarded, started_at, completed_at,
+            total_need_units, completed_need_units, visual_guest_count
+            FROM WAVE_RUN WHERE player_id = ? AND status = 'COMPLETE'
+            ORDER BY completed_at DESC, wave_run_id DESC LIMIT 1", playerId);
+        return runs.Count == 0 ? null : ReadSavedWaveResult(runs[0]);
+    }
+
+    private SavedWaveResult ReadSavedWaveResult(WaveRunResultRow run)
+    {
+        var rows = db.Query<WaveNeedResultRow>(@"SELECT need_key, demand_total, units_served,
+            avg_contribution_pct, bottleneck_seconds FROM WAVE_NEED_RESULT WHERE wave_run_id = ?
+            ORDER BY need_key", run.wave_run_id);
+        var services = new List<SavedWaveNeedResult>(rows.Count);
+        foreach (WaveNeedResultRow row in rows)
+            services.Add(new SavedWaveNeedResult(row));
+        return new SavedWaveResult(run, services);
     }
 
     public bool MoveWorker(string playerId, string fromBuildingKey, string toBuildingKey)
@@ -392,4 +482,86 @@ public class BuildingStateRecord
     public int level { get; set; }
     public int workers_assigned { get; set; }
     public int worker_slots { get; set; }
+}
+
+public sealed class WaveRunResultRow
+{
+    public long wave_run_id { get; set; }
+    public int wave_number { get; set; }
+    public string completion_token { get; set; }
+    public double? satisfaction_pct { get; set; }
+    public int? rating { get; set; }
+    public int? coins_awarded { get; set; }
+    public int? energy_awarded { get; set; }
+    public long started_at { get; set; }
+    public long? completed_at { get; set; }
+    public int? total_need_units { get; set; }
+    public int? completed_need_units { get; set; }
+    public int? visual_guest_count { get; set; }
+}
+
+public sealed class WaveNeedResultRow
+{
+    public string need_key { get; set; }
+    public int demand_total { get; set; }
+    public int units_served { get; set; }
+    public double? avg_contribution_pct { get; set; }
+    public double? bottleneck_seconds { get; set; }
+}
+
+public sealed class SavedWaveNeedResult
+{
+    public string NeedKey { get; }
+    public int DemandTotal { get; }
+    public int UnitsServed { get; }
+    public double? AverageContribution { get; }
+    public double? BottleneckSeconds { get; }
+
+    public SavedWaveNeedResult(WaveNeedResultRow row)
+    {
+        NeedKey = row.need_key;
+        DemandTotal = row.demand_total;
+        UnitsServed = row.units_served;
+        AverageContribution = row.avg_contribution_pct / 100d;
+        BottleneckSeconds = row.bottleneck_seconds;
+    }
+}
+
+public sealed class SavedWaveResult
+{
+    public int WaveNumber { get; }
+    public string CompletionToken { get; }
+    public double? Satisfaction { get; }
+    public int? Rating { get; }
+    public bool PerfectStay => Rating == 6;
+    public int? Coins { get; }
+    public int? Energy { get; }
+    public int? TotalNeedUnits { get; }
+    public int? CompletedNeedUnits { get; }
+    public int? VisualGuestCount { get; }
+    public long StartedAtUnixSeconds { get; }
+    public long? CompletedAtUnixSeconds { get; }
+    public IReadOnlyList<SavedWaveNeedResult> Services { get; }
+    public SavedWaveNeedResult MostSignificantBottleneck { get; }
+
+    public SavedWaveResult(WaveRunResultRow row, List<SavedWaveNeedResult> services)
+    {
+        WaveNumber = row.wave_number;
+        CompletionToken = row.completion_token;
+        Satisfaction = row.satisfaction_pct / 100d;
+        Rating = row.rating;
+        Coins = row.coins_awarded;
+        Energy = row.energy_awarded;
+        TotalNeedUnits = row.total_need_units;
+        CompletedNeedUnits = row.completed_need_units;
+        VisualGuestCount = row.visual_guest_count;
+        StartedAtUnixSeconds = row.started_at;
+        CompletedAtUnixSeconds = row.completed_at;
+        Services = services.AsReadOnly();
+        foreach (SavedWaveNeedResult service in services)
+            if (service.BottleneckSeconds > 0d
+                && (MostSignificantBottleneck == null
+                    || service.BottleneckSeconds > MostSignificantBottleneck.BottleneckSeconds))
+                MostSignificantBottleneck = service;
+    }
 }
