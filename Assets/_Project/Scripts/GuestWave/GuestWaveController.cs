@@ -2,6 +2,26 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>Published after a building upgrade is committed to the player save.</summary>
+public readonly struct BuildingUpgradeInfo
+{
+    public string BuildingKey { get; }
+    public int PreviousLevel { get; }
+    public int NewLevel { get; }
+    public int ServicePlaces { get; }
+    public int CoinCost { get; }
+
+    public BuildingUpgradeInfo(string buildingKey, int previousLevel, int newLevel,
+        int servicePlaces, int coinCost)
+    {
+        BuildingKey = buildingKey;
+        PreviousLevel = previousLevel;
+        NewLevel = newLevel;
+        ServicePlaces = servicePlaces;
+        CoinCost = coinCost;
+    }
+}
+
 public class GuestWaveController : MonoBehaviour
 {
     [Header("Prototype data assets")]
@@ -14,6 +34,7 @@ public class GuestWaveController : MonoBehaviour
     public event Action<int> OnWaveStarted;
     public event Action OnWaveCompleted;
     public event Action<float, int, int> OnWaveResult;
+    public event Action<WaveCompletionResult> OnDetailedWaveResult;
     public event Action<GuestWaveState> OnWaveStateChanged;
     public event Action<int, int> OnGuestCountChanged;
     public event Action<float> OnArrivalProgressChanged;
@@ -22,7 +43,13 @@ public class GuestWaveController : MonoBehaviour
     public event Action<ResortNeed, int> OnNeedArrived;
     public event Action<ResortNeed, WaveNeedStatus, int> OnNeedStatusChanged;
     public event Action<ServicePerformance> OnServicePerformanceChanged;
+    public event Action<BuildingUpgradeInfo> OnBuildingUpgraded;
+    public event Action OnCurrencyChanged;
     public int TotalGuests { get; private set; }
+    public WaveCompletionResult LatestCompletedResult { get; private set; }
+    public SavedWaveResult GetSavedWaveResult(string completionToken) =>
+        database?.GetCompletedWaveResult(playerId, completionToken);
+    public SavedWaveResult GetLatestSavedWaveResult() => database?.GetLatestCompletedWaveResult(playerId);
     public int GuestsArrived { get; private set; }
     public int GuestsLeft { get; private set; }
     public float Elapsed => simulation != null ? simulation.Elapsed : 0f;
@@ -30,6 +57,7 @@ public class GuestWaveController : MonoBehaviour
     public WaveDefinition CurrentWaveDefinition => activeWaveDefinition ?? ResolveNextWaveDefinition();
     public float WaveDuration => balanceConfig != null ? balanceConfig.WaveTimer : 0f;
     public float NeedArrivalWindow => balanceConfig != null ? balanceConfig.NeedArrivalWindow : 0f;
+    public int CurrentCoins => database != null ? database.GetCurrencyAmount(playerId, "COINS") : 0;
     public bool AreNeedArrivalsClosed => simulation != null && simulation.ArrivalsEnded;
 
     /// <summary>Copies live demand for UI initialization and refresh after reopening a menu.</summary>
@@ -55,6 +83,9 @@ public class GuestWaveController : MonoBehaviour
     private readonly HashSet<ResortNeed> activeWaveNeeds = new HashSet<ResortNeed>();
     private bool suddenRushScheduled;
     private bool simulationFinished;
+    private string activeWaveCompletionToken;
+    private long activeWaveStartedAtUnixSeconds;
+    private float nextCompletionSaveAttemptTime;
     private float finalSatisfaction;
     private int finalRating;
     private int finalCoins;
@@ -103,6 +134,11 @@ public class GuestWaveController : MonoBehaviour
             Debug.LogError("Assign both WaveBalanceConfig and WaveDefinition assets before starting a wave.", this);
             return;
         }
+
+        activeWaveCompletionToken = Guid.NewGuid().ToString("N");
+        activeWaveStartedAtUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        nextCompletionSaveAttemptTime = 0f;
+        returnWaitTimer = 0f;
 
         simulation = new WaveSimulation(balanceConfig);
         simulation.NeedProgressChanged += (need, served, total) => OnNeedProgressChanged?.Invoke(need, served, total);
@@ -195,6 +231,9 @@ public class GuestWaveController : MonoBehaviour
         return true;
     }
 
+    public int GetConfiguredServicePlacesForLevel(int level) =>
+        balanceConfig != null ? balanceConfig.CapacityForLevel(level) : 0;
+
     public bool CanBoost(ResortNeed need)
     {
         if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
@@ -211,7 +250,9 @@ public class GuestWaveController : MonoBehaviour
         int energy = database.GetCurrencyAmount(playerId, "ENERGY");
         if (!simulation.CanBoost(need, energy)) return false;
         if (!database.TrySpendCurrency(playerId, "ENERGY", balanceConfig.EnergyCostPerBoost, "WAVE_ENERGY_BOOST")) return false;
-        return simulation.TryBoost(need, energy);
+        bool boosted = simulation.TryBoost(need, energy);
+        OnCurrencyChanged?.Invoke();
+        return boosted;
     }
 
 
@@ -236,6 +277,7 @@ public class GuestWaveController : MonoBehaviour
     private void HandleSimulationCompleted(float satisfaction, int rating, int coins)
     {
         simulationFinished = true;
+        returnWaitTimer = 0f;
         if (CurrentState == GuestWaveState.Active)
             ChangeState(GuestWaveState.Resolving);
         finalSatisfaction = satisfaction;
@@ -247,11 +289,33 @@ public class GuestWaveController : MonoBehaviour
 
     private void FinalizeWave()
     {
-        if (CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving) return;
-        if (database != null && activeWaveDefinition != null)
-            database.RecordWaveCompletion(playerId, activeWaveDefinition.WaveNumber, finalCoins);
+        if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)
+            || Time.unscaledTime < nextCompletionSaveAttemptTime) return;
+        if (database == null || activeWaveDefinition == null || simulation == null) return;
+
+        WaveCompletionResult result;
+        bool rewardRecorded;
+        try
+        {
+            int energyReward = balanceConfig.EnergyRewardForRating(finalRating);
+            result = new WaveCompletionResult(activeWaveDefinition.WaveNumber, activeWaveCompletionToken,
+                finalSatisfaction, finalRating, finalCoins, energyReward, simulation.FinalTotalNeedUnits,
+                simulation.FinalCompletedNeedUnits, TotalGuests, activeWaveStartedAtUnixSeconds,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), simulation.FinalNeedResults);
+            rewardRecorded = database.RecordWaveCompletionOnce(playerId, result);
+        }
+        catch (Exception error)
+        {
+            nextCompletionSaveAttemptTime = Time.unscaledTime + 5f;
+            Debug.LogError($"Wave result could not be saved; completion will retry. {error}", this);
+            return;
+        }
+
+        LatestCompletedResult = result;
+        if (rewardRecorded) OnCurrencyChanged?.Invoke();
         ChangeState(GuestWaveState.Completed);
         OnWaveResult?.Invoke(finalSatisfaction, finalRating, finalCoins);
+        OnDetailedWaveResult?.Invoke(result);
     }
 
     private void ChangeState(GuestWaveState newState)
@@ -306,9 +370,61 @@ public class GuestWaveController : MonoBehaviour
             || CurrentState == GuestWaveState.Paused) return false;
         int coinCost = GetBuildingUnlockCost(buildingKey);
         if (coinCost < 0 || !database.TryUnlockBuilding(playerId, buildingKey, coinCost)) return false;
+        OnCurrencyChanged?.Invoke();
         RefreshBuildingPerformance(buildingKey);
         return true;
     }
+
+    /// <summary>Whether the selected unlocked building can be upgraded in a preparation or post-wave phase.</summary>
+    public bool CanUpgradeServiceBuilding(string buildingKey)
+    {
+        if (!IsBuildingUpgradePhase || database == null || balanceConfig == null
+            || string.IsNullOrWhiteSpace(buildingKey)) return false;
+
+        BuildingStateRecord state = database.GetBuildingState(playerId, buildingKey);
+        if (state == null || state.is_unlocked != 1 || state.level < 1 || state.level >= 3) return false;
+
+        int cost = balanceConfig.BuildingUpgradeCost(state.level + 1);
+        return cost >= 0 && database.GetCurrencyAmount(playerId, "COINS") >= cost;
+    }
+
+    /// <summary>Returns the configured cost of the next legal level, or -1 when no upgrade is available.</summary>
+    public int GetBuildingUpgradeCost(string buildingKey)
+    {
+        if (!IsBuildingUpgradePhase || database == null || balanceConfig == null
+            || string.IsNullOrWhiteSpace(buildingKey)) return -1;
+        BuildingStateRecord state = database.GetBuildingState(playerId, buildingKey);
+        if (state == null || state.is_unlocked != 1 || state.level < 1 || state.level >= 3) return -1;
+        return balanceConfig.BuildingUpgradeCost(state.level + 1);
+    }
+
+    /// <summary>Purchases exactly one configured level; it is intentionally unavailable during a wave.</summary>
+    public bool TryUpgradeServiceBuilding(string buildingKey)
+    {
+        if (!IsBuildingUpgradePhase || database == null || balanceConfig == null
+            || string.IsNullOrWhiteSpace(buildingKey)) return false;
+
+        BuildingStateRecord before = database.GetBuildingState(playerId, buildingKey);
+        if (before == null || before.is_unlocked != 1 || before.level < 1 || before.level >= 3) return false;
+
+        int nextLevel = before.level + 1;
+        int cost = balanceConfig.BuildingUpgradeCost(nextLevel);
+        if (cost < 0 || database.GetCurrencyAmount(playerId, "COINS") < cost
+            || !database.TryUpgradeBuilding(playerId, buildingKey, cost)) return false;
+
+        BuildingStateRecord after = database.GetBuildingState(playerId, buildingKey);
+        if (after == null || after.level != nextLevel)
+            throw new System.InvalidOperationException("The purchased building upgrade was not persisted at its expected level.");
+
+        RefreshBuildingPerformance(buildingKey);
+        OnCurrencyChanged?.Invoke();
+        OnBuildingUpgraded?.Invoke(new BuildingUpgradeInfo(buildingKey, before.level,
+            after.level, balanceConfig.CapacityForLevel(after.level), cost));
+        return true;
+    }
+
+    private bool IsBuildingUpgradePhase => CurrentState == GuestWaveState.Ready
+        || CurrentState == GuestWaveState.Completed;
 
     public int GetBuildingUnlockCost(string buildingKey) =>
         balanceConfig != null ? balanceConfig.BuildingUnlockCost(buildingKey) : -1;

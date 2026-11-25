@@ -51,6 +51,67 @@ public readonly struct ServicePerformance
     }
 }
 
+public readonly struct WaveNeedPerformance
+{
+    public ResortNeed Need { get; }
+    public int DemandTotal { get; }
+    public int UnitsServed { get; }
+    public float AverageContribution { get; }
+    public float BottleneckSeconds { get; }
+
+    public WaveNeedPerformance(ResortNeed need, int demandTotal, int unitsServed,
+        float averageContribution, float bottleneckSeconds)
+    {
+        Need = need;
+        DemandTotal = demandTotal;
+        UnitsServed = unitsServed;
+        AverageContribution = averageContribution;
+        BottleneckSeconds = bottleneckSeconds;
+    }
+}
+
+public sealed class WaveCompletionResult
+{
+    public int WaveNumber { get; }
+    public string CompletionToken { get; }
+    public float Satisfaction { get; }
+    public int Rating { get; }
+    public bool PerfectStay => Rating == 6;
+    public int Coins { get; }
+    public int Energy { get; }
+    public int TotalNeedUnits { get; }
+    public int CompletedNeedUnits { get; }
+    public int VisualGuestCount { get; }
+    public long StartedAtUnixSeconds { get; }
+    public long CompletedAtUnixSeconds { get; }
+    public IReadOnlyList<WaveNeedPerformance> Services { get; }
+    public WaveNeedPerformance? MostSignificantBottleneck { get; }
+
+    public WaveCompletionResult(int waveNumber, string completionToken, float satisfaction, int rating,
+        int coins, int energy, int totalNeedUnits, int completedNeedUnits, int visualGuestCount,
+        long startedAtUnixSeconds, long completedAtUnixSeconds, IReadOnlyList<WaveNeedPerformance> services)
+    {
+        WaveNumber = waveNumber;
+        CompletionToken = completionToken;
+        Satisfaction = satisfaction;
+        Rating = rating;
+        Coins = coins;
+        Energy = energy;
+        TotalNeedUnits = totalNeedUnits;
+        CompletedNeedUnits = completedNeedUnits;
+        VisualGuestCount = visualGuestCount;
+        StartedAtUnixSeconds = startedAtUnixSeconds;
+        CompletedAtUnixSeconds = completedAtUnixSeconds;
+        Services = services == null ? Array.Empty<WaveNeedPerformance>()
+            : new List<WaveNeedPerformance>(services).AsReadOnly();
+        foreach (WaveNeedPerformance service in Services)
+            if (service.BottleneckSeconds > 0f
+                && (!MostSignificantBottleneck.HasValue
+                    || service.BottleneckSeconds > MostSignificantBottleneck.Value.BottleneckSeconds))
+                MostSignificantBottleneck = service;
+    }
+}
+
 /// <summary>Processes wave demand independently for each service building.</summary>
 public sealed class WaveSimulation
 {
@@ -87,6 +148,7 @@ public sealed class WaveSimulation
         public int ScoredUnits;
         public int LastQueueCount;
         public float QueueGrowthSeconds;
+        public float BottleneckSeconds;
         public WaveNeedStatus Status;
 
         public int Waiting => Queue.Count;
@@ -119,6 +181,9 @@ public sealed class WaveSimulation
     public bool IsActive { get; private set; }
     public bool ArrivalsEnded => arrivalClosed;
     public float Elapsed => time;
+    public IReadOnlyList<WaveNeedPerformance> FinalNeedResults { get; private set; } = Array.Empty<WaveNeedPerformance>();
+    public int FinalTotalNeedUnits { get; private set; }
+    public int FinalCompletedNeedUnits { get; private set; }
 
     /// <summary>Diagnostic state; queue counts exclude guests in service places.</summary>
     public string DrainStatus
@@ -189,6 +254,9 @@ public sealed class WaveSimulation
             throw new ArgumentException("WaveDefinition must include at least one demand.", nameof(definition));
 
         needs.Clear();
+        FinalNeedResults = Array.Empty<WaveNeedPerformance>();
+        FinalTotalNeedUnits = 0;
+        FinalCompletedNeedUnits = 0;
         foreach (NeedDemand demand in definition.Demands)
         {
             if (activeNeeds != null && !activeNeeds.Contains(demand.need)) continue;
@@ -406,6 +474,8 @@ public sealed class WaveSimulation
 
     private void UpdateStatus(NeedState state, float deltaTime)
     {
+        if (state.Status == WaveNeedStatus.Bottleneck)
+            state.BottleneckSeconds += deltaTime;
         int queueCount = state.Waiting;
         if (queueCount > state.LastQueueCount) state.Trend = 1;
         else if (queueCount < state.LastQueueCount) state.Trend = -1;
@@ -457,6 +527,8 @@ public sealed class WaveSimulation
         IsActive = false;
         float weight = 0f, score = 0f;
         int total = 0;
+        int completed = 0;
+        var serviceResults = new List<WaveNeedPerformance>(needs.Count);
         foreach (NeedState state in needs)
         {
             float needWeight = state.Need == ResortNeed.OceanView ? config.OceanViewSatisfactionWeight : 1f;
@@ -464,11 +536,24 @@ public sealed class WaveSimulation
             score += state.SatisfactionTotal + unscoredUnits * config.UnitFloor * needWeight;
             weight += state.SatisfactionWeight + unscoredUnits * needWeight;
             total += state.Total;
+            completed += state.Served;
+            serviceResults.Add(new WaveNeedPerformance(state.Need, state.Total, state.Served,
+                state.SatisfactionWeight > 0f ? state.SatisfactionTotal / state.SatisfactionWeight : 0f,
+                state.BottleneckSeconds));
         }
         float satisfaction = Mathf.Max(config.WaveFloor, weight > 0f ? score / weight : config.WaveFloor);
         int rating = 1;
         for (int i = 0; i < 6; i++) if (satisfaction >= config.RatingThreshold(i)) rating = i + 1;
-        int coins = Mathf.RoundToInt(total * config.CoinsPerUnit * config.CoinsRatingMultiplier(rating - 1));
+        float multiplier = config.CoinsRatingMultiplier(rating - 1);
+        float rewardAmount = total * (float)config.CoinsPerUnit * multiplier;
+        if (config.CoinsPerUnit < 0 || float.IsNaN(multiplier) || float.IsInfinity(multiplier)
+            || multiplier < 0f || float.IsNaN(rewardAmount) || float.IsInfinity(rewardAmount)
+            || rewardAmount < 0f || rewardAmount > int.MaxValue)
+            throw new InvalidOperationException("Wave Coin reward configuration is invalid.");
+        int coins = Mathf.RoundToInt(rewardAmount);
+        FinalNeedResults = serviceResults.AsReadOnly();
+        FinalTotalNeedUnits = total;
+        FinalCompletedNeedUnits = completed;
         Completed?.Invoke(satisfaction, rating, coins);
     }
 }

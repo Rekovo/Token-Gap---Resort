@@ -14,6 +14,7 @@ public class GuestWaveTester : MonoBehaviour
     private string lastDebugAction = "Ready. Start a wave with 1.";
     private string staffingReadout = "Staffing data loading...";
     private float nextStaffingReadoutTime;
+    private Vector2 debugScroll;
 
     private void Awake()
     {
@@ -170,11 +171,15 @@ public class GuestWaveTester : MonoBehaviour
             return;
         }
 
-        // This Editor-only setup satisfies the real wave and coin gates. The following
-        // purchase action still uses BuildingSlot.TryPurchaseUnlock and the production transaction.
-        debugDatabase.RecordWaveCompletion(DebugPlayerId, 3, 0);
+        // Keep QA grants out of completed-wave history.
+        if (debugDatabase.GetHighestWaveCompleted(DebugPlayerId) < 3)
+        {
+            lastDebugAction = "Complete Wave 3 before preparing a Pool purchase test.";
+            Debug.LogWarning(lastDebugAction, this);
+            return;
+        }
         debugDatabase.AddCurrency(DebugPlayerId, "COINS", cost, "DEV_TEST_POOL_PURCHASE_GRANT");
-        lastDebugAction = $"Pool purchase test ready: Wave 3 gate set and +{cost} test Coins granted. Press P to purchase.";
+        lastDebugAction = $"Pool purchase test ready: +{cost} test Coins granted. Press P to purchase.";
         Debug.Log(lastDebugAction, this);
         RefreshStaffingReadout();
     }
@@ -246,7 +251,11 @@ public class GuestWaveTester : MonoBehaviour
         if (Time.unscaledTime >= nextStaffingReadoutTime)
             RefreshStaffingReadout();
 
-        GUILayout.BeginArea(new Rect(12f, 12f, 470f, 500f), "QA / DEVELOPMENT ONLY", GUI.skin.window);
+        float width = Mathf.Min(470f, Screen.width - 24f);
+        float height = Mathf.Max(160f, Mathf.Min(500f, Screen.height - 132f));
+        GUILayout.BeginArea(new Rect(Screen.width - width - 12f, 120f, width, height),
+            "QA / DEVELOPMENT ONLY", GUI.skin.window);
+        debugScroll = GUILayout.BeginScrollView(debugScroll);
         GUILayout.Label("QA / DEVELOPMENT ONLY — F2 hides this panel");
         GUILayout.Label($"Wave: {controller.CurrentState}   Energy: {GetEnergyBalance()}   Coins: {GetCoinBalance()}");
         GUILayout.Label("1 start | R move Worker | G +3 Energy | Q Drinks boost | 6 pause | 7 resume");
@@ -276,6 +285,7 @@ public class GuestWaveTester : MonoBehaviour
         GUILayout.Space(6f);
         GUILayout.Label("Service places (remaining base work):");
         GUILayout.Label(controller.ServiceDiagnostics);
+        GUILayout.EndScrollView();
         GUILayout.EndArea();
     }
 

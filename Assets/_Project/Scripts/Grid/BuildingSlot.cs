@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 public class BuildingSlot : MonoBehaviour
@@ -6,11 +7,13 @@ public class BuildingSlot : MonoBehaviour
     [SerializeField] Vector2Int footprint = new(2, 2);
     [Tooltip("Where the Worker stands (empty child transform)")]
     [SerializeField] Transform workerAnchor;
-    
+
     [SerializeField, Tooltip("Stable key matching BUILDING_DEFINITION, e.g. RESTAURANT")]
     private string buildingKey;
     [SerializeField, Tooltip("Optional; auto-found in the active scene when omitted")]
     private GuestWaveController waveController;
+    [SerializeField, Tooltip("Model-only child used for the tier appearance and purchase pulse")]
+    private Transform visualRoot;
 
     public Vector2Int Origin { get; private set; }
     public Transform WorkerAnchor => workerAnchor;
@@ -24,10 +27,15 @@ public class BuildingSlot : MonoBehaviour
     private MaterialPropertyBlock propBlock;
     private static readonly int BaseColorID = Shader.PropertyToID("_BaseColor"); // URP
     private static readonly int ColorID = Shader.PropertyToID("_Color"); // Standard
+    private bool highlighted;
+    private Vector3 visualBaseScale = Vector3.one;
+    private Coroutine upgradePulse;
 
     void Start()
     {
         if (waveController == null) waveController = FindAnyObjectByType<GuestWaveController>();
+        ResolveVisualRoot();
+        if (waveController != null) waveController.OnBuildingUpgraded += HandleBuildingUpgraded;
 
         if (!string.IsNullOrWhiteSpace(buildingKey))
         {
@@ -43,7 +51,7 @@ public class BuildingSlot : MonoBehaviour
             Debug.LogError($"{name}: assign a GridMap before starting.", this);
             return;
         }
-        
+
         Vector3 bottomLeftCentre = transform.position
             - new Vector3(footprint.x - 1, 0, footprint.y - 1) * 0.5f * grid.CellSize;
         Origin = grid.WorldToCell(bottomLeftCentre);
@@ -91,13 +99,42 @@ public class BuildingSlot : MonoBehaviour
         return true;
     }
 
+    public int UpgradeCoinCost => waveController != null
+        ? waveController.GetBuildingUpgradeCost(buildingKey) : -1;
+
+    public bool CanUpgrade => IsUnlocked && waveController != null
+        && waveController.CanUpgradeServiceBuilding(buildingKey);
+
+    /// <summary>Purchases one level through the authoritative controller and persisted player state.</summary>
+    public bool TryPurchaseUpgrade()
+    {
+        return IsUnlocked && waveController != null
+            && waveController.TryUpgradeServiceBuilding(buildingKey);
+    }
+
+    private void HandleBuildingUpgraded(BuildingUpgradeInfo info)
+    {
+        if (info.BuildingKey != buildingKey) return;
+        RefreshPersistedState();
+        PlayUpgradePulse();
+    }
+
     public void RefreshPersistedState()
     {
         if (database == null || string.IsNullOrWhiteSpace(buildingKey)) return;
+        int previousLevel = Level;
         PersistedState = database.GetBuildingState("test-player-001", buildingKey);
+        if (previousLevel != Level) ApplyLevelAppearance();
     }
 
     public void SetHighlight(bool active)
+    {
+        if (highlighted == active) return;
+        highlighted = active;
+        ApplyLevelAppearance();
+    }
+
+    private void ApplyLevelAppearance()
     {
         if (visualRenderers == null)
         {
@@ -105,8 +142,7 @@ public class BuildingSlot : MonoBehaviour
             propBlock = new MaterialPropertyBlock();
         }
 
-        // Darkens the building slightly on hover for visual feedback
-        Color tint = active ? Color.gray : Color.white;
+        Color tint = highlighted ? Color.gray : Color.white;
 
         foreach (Renderer r in visualRenderers)
         {
@@ -117,8 +153,46 @@ public class BuildingSlot : MonoBehaviour
         }
     }
 
+    private void ResolveVisualRoot()
+    {
+        if (visualRoot == null) visualRoot = transform.Find("Visual");
+        if (visualRoot != null) visualBaseScale = visualRoot.localScale;
+    }
+
+    private void PlayUpgradePulse()
+    {
+        if (visualRoot == null) return;
+        if (upgradePulse != null) StopCoroutine(upgradePulse);
+        upgradePulse = StartCoroutine(UpgradePulseRoutine());
+    }
+
+    private IEnumerator UpgradePulseRoutine()
+    {
+        const float pulseScale = 1.1f;
+        const float riseDuration = 0.12f;
+        const float fallDuration = 0.2f;
+        float elapsed = 0f;
+        while (elapsed < riseDuration)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            visualRoot.localScale = visualBaseScale * Mathf.Lerp(1f, pulseScale, elapsed / riseDuration);
+            yield return null;
+        }
+
+        elapsed = 0f;
+        while (elapsed < fallDuration)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            visualRoot.localScale = visualBaseScale * Mathf.Lerp(pulseScale, 1f, elapsed / fallDuration);
+            yield return null;
+        }
+        visualRoot.localScale = visualBaseScale;
+        upgradePulse = null;
+    }
+
     void OnDestroy()
     {
+        if (waveController != null) waveController.OnBuildingUpgraded -= HandleBuildingUpgraded;
         if (grid != null && grid.Data != null) grid.Data.Remove(this);
         database?.Dispose();
     }

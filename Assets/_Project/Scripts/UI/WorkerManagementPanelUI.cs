@@ -3,15 +3,14 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-/// <summary>Player-facing view of saved assignments; BuildingSlot owns the transfer.</summary>
+/// <summary>Building detail and source selection for moving a Worker to a service need.</summary>
 public sealed class WorkerManagementPanelUI : MonoBehaviour
 {
-    private sealed class BuildingRow
+    private sealed class SourceCard
     {
         public Image Background;
-        public Image Accent;
-        public Image ActionBadge;
         public Button Button;
+        public SegmentedCapacityRingGraphic Ring;
         public TMP_Text Name;
         public TMP_Text Detail;
         public TMP_Text Action;
@@ -19,31 +18,40 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
 
     private readonly List<BuildingSlot> available = new List<BuildingSlot>(5);
     private readonly List<WaveNeedSnapshot> snapshots = new List<WaveNeedSnapshot>(5);
-    private readonly Dictionary<ResortNeed, BuildingRow> rows = new Dictionary<ResortNeed, BuildingRow>(5);
+    private readonly Dictionary<ResortNeed, SourceCard> sourceCards = new Dictionary<ResortNeed, SourceCard>(5);
+    private readonly Dictionary<ResortNeed, string> sourceBaseDetails = new Dictionary<ResortNeed, string>(5);
     private GuestWaveController controller;
-    private TMP_Text summaryText;
-    private TMP_Text focusText;
-    private TMP_Text destinationText;
+    private TMP_Text buildingTitle;
+    private TMP_Text workforceTotal;
+    private TMP_Text buildingDetails;
+    private TMP_Text workerState;
+    private TMP_Text sectionTitle;
     private TMP_Text messageText;
-    private ResortNeed? focusedNeed;
+    private TMP_Text upgradeAction;
+    private Button upgradeButton;
+    private TMP_Text upgradeButtonText;
+    private ResortNeed? destinationNeed;
+    private ResortNeed? selectedSourceNeed;
+    private string requestedBuildingKey;
     private string resultMessage;
     private bool duplicateBuilding;
 
-    public void Initialize(GuestWaveController waveController)
-    {
-        controller = waveController;
-    }
+    public void Initialize(GuestWaveController waveController) => controller = waveController;
 
     public void FocusNeed(ResortNeed? need)
     {
-        focusedNeed = need;
+        destinationNeed = need;
+        requestedBuildingKey = null;
+        selectedSourceNeed = null;
         resultMessage = null;
         if (isActiveAndEnabled) Refresh();
     }
 
     public void FocusBuilding(string buildingKey)
     {
-        focusedNeed = TryNeedForKey(buildingKey, out ResortNeed need) ? need : (ResortNeed?)null;
+        requestedBuildingKey = buildingKey;
+        destinationNeed = TryNeedForKey(buildingKey, out ResortNeed need) ? need : (ResortNeed?)null;
+        selectedSourceNeed = null;
         resultMessage = null;
         if (isActiveAndEnabled) Refresh();
     }
@@ -51,12 +59,13 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
     private void OnEnable()
     {
         if (controller == null) controller = FindAnyObjectByType<GuestWaveController>();
-        if (rows.Count == 0) BuildUI();
+        if (sourceCards.Count == 0) BuildUI();
         if (controller != null)
         {
             controller.OnWaveStateChanged += HandleStateChanged;
             controller.OnServicePerformanceChanged += HandlePerformanceChanged;
-            controller.OnNeedStatusChanged += HandleNeedStatusChanged;
+            controller.OnNeedStateChanged += HandleNeedStateChanged;
+            controller.OnBuildingUpgraded += HandleBuildingUpgraded;
         }
         Refresh();
     }
@@ -66,174 +75,280 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         if (controller == null) return;
         controller.OnWaveStateChanged -= HandleStateChanged;
         controller.OnServicePerformanceChanged -= HandlePerformanceChanged;
-        controller.OnNeedStatusChanged -= HandleNeedStatusChanged;
+        controller.OnNeedStateChanged -= HandleNeedStateChanged;
+        controller.OnBuildingUpgraded -= HandleBuildingUpgraded;
     }
 
     private void BuildUI()
     {
         RectTransform panel = (RectTransform)transform;
-        panel.sizeDelta = new Vector2(900f, 740f);
+        panel.sizeDelta = new Vector2(900f, 760f);
         Image panelBackground = GetComponent<Image>();
-        if (panelBackground != null)
-            panelBackground.color = new Color(0.10f, 0.23f, 0.20f, 0.94f);
+        if (panelBackground != null) panelBackground.color = new Color(0.10f, 0.23f, 0.20f, 0.985f);
 
-        summaryText = WaveNeedRowUI.CreateText("WorkerSummary", panel, new Vector2(0f, 279f),
-            new Vector2(820f, 38f), 27f, TextAlignmentOptions.Center);
-        focusText = WaveNeedRowUI.CreateText("WorkerFocus", panel, new Vector2(0f, 235f),
-            new Vector2(820f, 34f), 23f, TextAlignmentOptions.Center);
-        focusText.color = new Color(0.78f, 0.93f, 0.86f);
-        destinationText = WaveNeedRowUI.CreateText("WorkerDestination", panel, new Vector2(0f, 190f),
-            new Vector2(820f, 50f), 23f, TextAlignmentOptions.Center);
-        destinationText.color = new Color(1f, 0.78f, 0.41f);
+        buildingTitle = WaveNeedRowUI.CreateText("SelectedBuilding", panel, new Vector2(0f, 268f),
+            new Vector2(820f, 40f), 30f, TextAlignmentOptions.Center);
+        workforceTotal = WaveNeedRowUI.CreateText("WorkforceTotal", panel, new Vector2(0f, 300f),
+            new Vector2(820f, 28f), 18f, TextAlignmentOptions.Center);
+        buildingDetails = WaveNeedRowUI.CreateText("BuildingDetails", panel, new Vector2(0f, 224f),
+            new Vector2(820f, 38f), 22f, TextAlignmentOptions.Center);
+        workerState = WaveNeedRowUI.CreateText("CurrentWorkerState", panel, new Vector2(0f, 185f),
+            new Vector2(820f, 34f), 22f, TextAlignmentOptions.Center);
+        workerState.color = new Color(1f, 0.79f, 0.48f);
 
-        TMP_Text section = WaveNeedRowUI.CreateText("WorkerSourceHeading", panel, new Vector2(0f, 143f),
-            new Vector2(820f, 32f), 23f, TextAlignmentOptions.MidlineLeft);
-        section.text = "SERVICE BUILDINGS  •  Tap a green row to move its Worker";
-        section.color = new Color(0.78f, 0.93f, 0.86f);
+        upgradeAction = WaveNeedRowUI.CreateText("UpgradeDetails", panel, new Vector2(0f, 148f),
+            new Vector2(820f, 28f), 18f, TextAlignmentOptions.Center);
+        upgradeButton = CreateButton("BuildingUpgradeButton", panel, new Vector2(0f, 108f),
+            new Vector2(820f, 52f), out upgradeButtonText);
+        upgradeButton.onClick.AddListener(TryUpgradeFocusedBuilding);
+
+        sectionTitle = WaveNeedRowUI.CreateText("WorkerSourcesHeading", panel, new Vector2(0f, 65f),
+            new Vector2(820f, 32f), 21f, TextAlignmentOptions.MidlineLeft);
+        sectionTitle.text = "AVAILABLE WORKER SOURCES";
+        sectionTitle.color = new Color(0.78f, 0.93f, 0.86f);
 
         for (int i = 0; i < WaveNeedPresentation.StableOrder.Length; i++)
-        {
-            ResortNeed need = WaveNeedPresentation.StableOrder[i];
-            rows.Add(need, BuildRow(panel, need, 87f - i * 65f));
-        }
+            sourceCards.Add(WaveNeedPresentation.StableOrder[i],
+                BuildSourceCard(panel, WaveNeedPresentation.StableOrder[i], 14f - i * 61f));
 
-        messageText = WaveNeedRowUI.CreateText("WorkerMessage", panel, new Vector2(0f, -235f),
-            new Vector2(820f, 36f), 22f, TextAlignmentOptions.Center);
+        messageText = WaveNeedRowUI.CreateText("WorkerMessage", panel, new Vector2(0f, -245f),
+            new Vector2(820f, 34f), 19f, TextAlignmentOptions.Center);
         messageText.color = new Color(0.91f, 0.96f, 0.92f);
     }
 
-    private BuildingRow BuildRow(RectTransform panel, ResortNeed need, float y)
+    private SourceCard BuildSourceCard(RectTransform panel, ResortNeed need, float y)
     {
-        GameObject rowObject = new GameObject("WorkerRow_" + need,
+        GameObject cardObject = new GameObject("WorkerSource_" + need,
             typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button));
-        RectTransform rect = (RectTransform)rowObject.transform;
+        RectTransform rect = (RectTransform)cardObject.transform;
         rect.SetParent(panel, false);
-        Place(rect, new Vector2(0f, y), new Vector2(820f, 62f));
-        Image background = rowObject.GetComponent<Image>();
-        Button button = rowObject.GetComponent<Button>();
+        Place(rect, new Vector2(0f, y), new Vector2(820f, 58f));
+        Image background = cardObject.GetComponent<Image>();
+        Button button = cardObject.GetComponent<Button>();
         button.transition = Selectable.Transition.None;
-        button.onClick.AddListener(() => TryTransferFrom(need));
+        button.onClick.AddListener(() => SelectSource(need));
 
-        Image accent = CreateImage("StaffingAccent", rect, new Vector2(-401f, 0f),
-            new Vector2(7f, 52f));
-        Image actionBadge = CreateImage("TransferActionBackground", rect, new Vector2(298f, 13f),
-            new Vector2(192f, 34f));
-        Image menuBackground = panel.GetComponent<Image>();
-        if (menuBackground != null)
-        {
-            actionBadge.sprite = menuBackground.sprite;
-            actionBadge.type = menuBackground.type;
-        }
+        GameObject ringObject = new GameObject("CapacityRing", typeof(RectTransform),
+            typeof(CanvasRenderer), typeof(SegmentedCapacityRingGraphic));
+        RectTransform ringRect = (RectTransform)ringObject.transform;
+        ringRect.SetParent(rect, false);
+        Place(ringRect, new Vector2(-365f, 0f), new Vector2(44f, 44f));
+        SegmentedCapacityRingGraphic ring = ringObject.GetComponent<SegmentedCapacityRingGraphic>();
+        ring.Thickness = 4f;
+        ring.raycastTarget = false;
 
-        TMP_Text nameText = WaveNeedRowUI.CreateText("BuildingName", rect,
-            new Vector2(-114f, 14f), new Vector2(560f, 26f), 24f, TextAlignmentOptions.MidlineLeft);
-        TMP_Text detailText = WaveNeedRowUI.CreateText("BuildingDetail", rect,
-            new Vector2(-15f, -17f), new Vector2(760f, 24f), 20f, TextAlignmentOptions.MidlineLeft);
-        TMP_Text actionText = WaveNeedRowUI.CreateText("WorkerAction", rect,
-            new Vector2(298f, 13f), new Vector2(180f, 28f), 20f, TextAlignmentOptions.Center);
+        TMP_Text workerIcon = WaveNeedRowUI.CreateText("WorkerIndicator", rect, new Vector2(-315f, 0f),
+            new Vector2(36f, 30f), 20f, TextAlignmentOptions.Center);
+        workerIcon.text = "W";
+        workerIcon.color = new Color(0.59f, 0.91f, 0.68f);
 
-        return new BuildingRow
-        {
-            Background = background,
-            Accent = accent,
-            ActionBadge = actionBadge,
-            Button = button,
-            Name = nameText,
-            Detail = detailText,
-            Action = actionText
-        };
+        TMP_Text name = WaveNeedRowUI.CreateText("SourceName", rect, new Vector2(-60f, 13f),
+            new Vector2(460f, 26f), 23f, TextAlignmentOptions.MidlineLeft);
+        name.textWrappingMode = TextWrappingModes.NoWrap;
+        name.overflowMode = TextOverflowModes.Ellipsis;
+        TMP_Text detail = WaveNeedRowUI.CreateText("SourceDetails", rect, new Vector2(-60f, -14f),
+            new Vector2(460f, 23f), 18f, TextAlignmentOptions.MidlineLeft);
+        detail.enableAutoSizing = true;
+        detail.fontSizeMin = 16f;
+        detail.fontSizeMax = 18f;
+        detail.textWrappingMode = TextWrappingModes.NoWrap;
+        detail.overflowMode = TextOverflowModes.Ellipsis;
+        TMP_Text action = WaveNeedRowUI.CreateText("SourceAction", rect, new Vector2(300f, 0f),
+            new Vector2(180f, 34f), 20f, TextAlignmentOptions.Center);
+
+        return new SourceCard { Background = background, Button = button, Ring = ring,
+            Name = name, Detail = detail, Action = action };
     }
 
-    private void Refresh()
+    private void Refresh(bool reloadBuildings = true)
     {
-        if (summaryText == null) return;
+        if (buildingTitle == null) return;
         if (controller == null)
         {
-            summaryText.text = "Worker data unavailable";
-            destinationText.text = string.Empty;
-            focusText.text = string.Empty;
+            buildingTitle.text = "Worker data unavailable";
+            buildingDetails.text = string.Empty;
+            workerState.text = string.Empty;
             messageText.text = "Wave controller is missing.";
-            foreach (BuildingRow row in rows.Values) row.Button.gameObject.SetActive(false);
+            foreach (SourceCard card in sourceCards.Values) card.Button.gameObject.SetActive(false);
+            upgradeButton.gameObject.SetActive(false);
             return;
         }
 
-        CollectAvailableBuildings();
+        if (reloadBuildings) CollectAvailableBuildings();
         controller.GetNeedSnapshots(snapshots);
-        int totalWorkers = 0;
-        int emptyCount = 0;
-        BuildingSlot destination = null;
+        BuildingSlot destination = ResolveDestination();
+        BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
+            ? FindByKey(requestedBuildingKey)
+            : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : destination;
+        int workerCount = 0;
+        int unstaffedCount = 0;
         foreach (BuildingSlot building in available)
         {
-            totalWorkers += building.PersistedState.workers_assigned;
-            if (building.HasWorker) continue;
-            emptyCount++;
-            destination = building;
+            if (building.HasWorker) workerCount++;
+            else unstaffedCount++;
         }
-
-        bool consistent = !duplicateBuilding && emptyCount == 1;
-        bool allowedState = controller.CurrentState == GuestWaveState.Ready
+        workforceTotal.text = $"{workerCount} Workers  •  {available.Count} available buildings  •  {unstaffedCount} unstaffed";
+        bool targetIsUnstaffed = destination != null && !destination.HasWorker;
+        bool transferPhase = controller.CurrentState == GuestWaveState.Ready
             || controller.CurrentState == GuestWaveState.Active
             || controller.CurrentState == GuestWaveState.Resolving;
-        bool canTransfer = consistent && allowedState;
+        bool upgradePhase = controller.CurrentState == GuestWaveState.Ready
+            || controller.CurrentState == GuestWaveState.Completed;
+        bool consistent = !duplicateBuilding && unstaffedCount == 1;
 
-        summaryText.text = $"{totalWorkers} Workers  •  {available.Count} available service buildings";
-        focusText.text = focusedNeed.HasValue
-            ? "Viewing " + WaveNeedPresentation.NameFor(focusedNeed.Value)
-            : "Choose a staffed source below";
-
-        if (duplicateBuilding)
-            destinationText.text = "Duplicate service buildings found. Transfers disabled.";
-        else if (emptyCount != 1)
-            destinationText.text = $"Staffing inconsistent: {emptyCount} unstaffed buildings. Transfers disabled.";
-        else
-            destinationText.text = "Automatic destination: " + DisplayName(destination)
-                + "  •  gains a Worker and runs faster";
-
-        foreach (ResortNeed need in WaveNeedPresentation.StableOrder)
+        if (target == null)
         {
-            BuildingRow row = rows[need];
-            BuildingSlot building = FindAvailable(need);
-            row.Button.gameObject.SetActive(building != null);
-            if (building == null) continue;
-
-            bool staffed = building.HasWorker;
-            bool focused = focusedNeed.HasValue && focusedNeed.Value == need;
-            row.Background.color = staffed
-                ? focused ? new Color(0.16f, 0.42f, 0.33f, 0.99f)
-                    : new Color(0.10f, 0.32f, 0.26f, 0.98f)
-                : focused ? new Color(0.43f, 0.31f, 0.16f, 0.99f)
-                    : new Color(0.35f, 0.26f, 0.14f, 0.98f);
-            row.Accent.color = staffed ? new Color(0.47f, 0.88f, 0.63f) : new Color(1f, 0.72f, 0.32f);
-            row.ActionBadge.color = staffed
-                ? canTransfer ? new Color(0.19f, 0.53f, 0.37f) : new Color(0.29f, 0.37f, 0.33f)
-                : new Color(0.58f, 0.40f, 0.18f);
-            row.Name.text = DisplayName(building) + (staffed ? "  •  STAFFED" : "  •  SLOW / UNSTAFFED");
-            row.Name.color = staffed ? new Color(0.66f, 0.92f, 0.76f) : new Color(1f, 0.79f, 0.43f);
-            row.Detail.text = PerformanceText(need) + StatusText(need);
-            row.Action.text = staffed
-                ? canTransfer ? "MOVE WORKER" : controller.CurrentState == GuestWaveState.Paused ? "PAUSED" : "UNAVAILABLE"
-                : "AUTO TARGET";
-            row.Action.color = Color.white;
-            row.Button.interactable = staffed && canTransfer;
+            buildingTitle.text = "Choose a service building";
+            buildingDetails.text = "Tap an unstaffed building on the island to view its capacity and staffing.";
+            workerState.text = string.Empty;
+        }
+        else
+        {
+            int places = controller.TryGetServicePlaces(NeedForKey(target.BuildingKey), out int activeCapacity)
+                ? activeCapacity : controller.GetConfiguredServicePlacesForLevel(Mathf.Max(1, target.Level));
+            string name = DisplayName(target);
+            buildingTitle.text = name + "  •  LEVEL " + target.Level;
+            string performance = "Service speed unavailable";
+            if (TryNeedForKey(target.BuildingKey, out ResortNeed targetNeed)
+                && controller.TryGetServicePerformance(targetNeed, out ServicePerformance rate)
+                && rate.ServiceRatePerSecond > 0f)
+                performance = (rate.Utilization * 100f).ToString("0") + "% speed  •  "
+                    + (1f / rate.ServiceRatePerSecond).ToString("0.0") + "s / unit / place";
+            buildingDetails.text = "Capacity: " + places + " places  •  " + performance;
+            workerState.text = target.HasWorker ? "Current Worker: assigned" : "Current Worker: none";
+            workerState.color = target.HasWorker ? new Color(0.49f, 0.83f, 0.58f)
+                : new Color(1f, 0.72f, 0.4f);
+            if (TryNeedForKey(target.BuildingKey, out targetNeed))
+                buildingDetails.text += StatusText(targetNeed);
         }
 
+        UpdateUpgradeSection(target, upgradePhase);
+        UpdateSourceCards(destination, targetIsUnstaffed && transferPhase && consistent);
+
         if (controller.CurrentState == GuestWaveState.Paused)
-            messageText.text = "Wave paused. Resume to transfer Workers.";
-        else if (!allowedState)
-            messageText.text = "Prepare the next wave to transfer Workers.";
+            messageText.text = "Wave paused. Resume to move a Worker.";
         else if (!consistent)
-            messageText.text = "Check saved assignments before moving a Worker.";
+            messageText.text = duplicateBuilding ? "Duplicate service buildings found. Transfers disabled."
+                : "Exactly one available building must be unstaffed to move a Worker.";
+        else if (target != null && target.HasWorker)
+            messageText.text = "Tap " + DisplayName(target) + " above to move its Worker to "
+                + DisplayName(destination) + ".";
+        else if (targetIsUnstaffed)
+            messageText.text = "Tap a staffed source above to move its Worker to "
+                + DisplayName(destination) + ".";
         else
-            messageText.text = string.IsNullOrEmpty(resultMessage)
-                ? "The source will run more slowly after its Worker moves."
-                : resultMessage;
+            messageText.text = "Tap an unstaffed service building to choose where to send a Worker.";
+
+        if (!string.IsNullOrEmpty(resultMessage)) messageText.text = resultMessage;
+    }
+
+    private BuildingSlot ResolveDestination()
+    {
+        foreach (BuildingSlot building in available)
+            if (!building.HasWorker) return building;
+        return null;
+    }
+
+    private void UpdateUpgradeSection(BuildingSlot target, bool upgradePhase)
+    {
+        bool showUpgrade = target != null && target.IsUnlocked && upgradePhase;
+        upgradeAction.gameObject.SetActive(showUpgrade);
+        upgradeButton.gameObject.SetActive(showUpgrade);
+        if (!showUpgrade) return;
+
+        int currentCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level);
+        if (target.Level >= 3)
+        {
+            upgradeAction.text = "Building capacity is at its prototype maximum.";
+            upgradeButton.interactable = false;
+            upgradeButtonText.text = "MAX LEVEL  •  " + currentCapacity + " PLACES";
+            return;
+        }
+
+        int nextCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level + 1);
+        int cost = controller.GetBuildingUpgradeCost(target.BuildingKey);
+        bool canAfford = target.CanUpgrade;
+        upgradeAction.text = canAfford ? "A permanent capacity improvement for the next wave."
+            : "Need " + Mathf.Max(0, cost - controller.CurrentCoins) + " more Coins to upgrade.";
+        upgradeButton.interactable = canAfford;
+        upgradeButtonText.text = "UPGRADE  •  " + currentCapacity + " → " + nextCapacity
+            + " PLACES  •  " + cost + " COINS";
+    }
+
+    private void UpdateSourceCards(BuildingSlot target, bool canSelectSources)
+    {
+        int visibleIndex = 0;
+        foreach (ResortNeed need in WaveNeedPresentation.StableOrder)
+        {
+            SourceCard card = sourceCards[need];
+            BuildingSlot source = FindAvailable(need);
+            bool show = source != null && source.HasWorker && source != target;
+            card.Button.gameObject.SetActive(show);
+            if (!show) continue;
+            ((RectTransform)card.Button.transform).anchoredPosition = new Vector2(0f, 14f - visibleIndex * 61f);
+            visibleIndex++;
+
+            bool selected = selectedSourceNeed.HasValue && selectedSourceNeed.Value == need;
+            bool bottleneck = IsBottleneck(need);
+            card.Background.color = selected ? new Color(0.18f, 0.46f, 0.34f, 1f)
+                : bottleneck ? new Color(0.40f, 0.22f, 0.20f, 0.98f)
+                : new Color(0.12f, 0.32f, 0.27f, 0.98f);
+            card.Name.text = DisplayName(source) + StatusText(need);
+            card.Name.color = Color.white;
+            sourceBaseDetails[need] = SourceDetails(need, source);
+            card.Detail.text = sourceBaseDetails[need];
+            card.Action.text = "MOVE WORKER";
+            card.Action.color = bottleneck ? new Color(1f, 0.65f, 0.53f) : new Color(0.77f, 0.93f, 0.81f);
+            card.Button.interactable = canSelectSources;
+            int capacity = controller.TryGetServicePlaces(need, out int count) ? count : 0;
+            int occupied = FindProcessingCount(need);
+            card.Ring.SetState(capacity, occupied, bottleneck);
+        }
+    }
+
+    private string SourceDetails(ResortNeed need, BuildingSlot source)
+    {
+        int capacity = controller.TryGetServicePlaces(need, out int count) ? count : 0;
+        string text = "STAFFED  •  " + capacity + " places";
+        if (controller.TryGetServicePerformance(need, out ServicePerformance performance))
+        {
+            text += "  •  " + (performance.Utilization * 100f).ToString("0") + "% speed";
+            if (performance.EnergyBoosted) text += "  •  BOOSTED";
+        }
+        return text;
+    }
+
+    private string StatusText(ResortNeed need)
+    {
+        foreach (WaveNeedSnapshot snapshot in snapshots)
+        {
+            if (snapshot.Need == need && snapshot.Status == WaveNeedStatus.Bottleneck)
+                return "  •  BOTTLENECK";
+            if (snapshot.Need == need && snapshot.Status == WaveNeedStatus.Recovering)
+                return "  •  RECOVERING";
+        }
+        return string.Empty;
+    }
+
+    private bool IsBottleneck(ResortNeed need)
+    {
+        foreach (WaveNeedSnapshot snapshot in snapshots)
+            if (snapshot.Need == need) return snapshot.Status == WaveNeedStatus.Bottleneck;
+        return false;
+    }
+
+    private int FindProcessingCount(ResortNeed need)
+    {
+        foreach (WaveNeedSnapshot snapshot in snapshots)
+            if (snapshot.Need == need) return snapshot.Processing;
+        return 0;
     }
 
     private void CollectAvailableBuildings()
     {
         available.Clear();
         duplicateBuilding = false;
-        BuildingSlot[] sceneBuildings = FindObjectsByType<BuildingSlot>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        BuildingSlot[] sceneBuildings = FindObjectsByType<BuildingSlot>(FindObjectsInactive.Include);
         foreach (ResortNeed need in WaveNeedPresentation.StableOrder)
         {
             BuildingSlot found = null;
@@ -258,67 +373,89 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         return null;
     }
 
-    private string PerformanceText(ResortNeed need)
+    private BuildingSlot FindByKey(string key)
     {
-        string places = controller.TryGetServicePlaces(need, out int count) ? count + " places" : "places unavailable";
-        if (!controller.TryGetServicePerformance(need, out ServicePerformance performance)
-            || performance.ServiceRatePerSecond <= 0f) return places;
-        float seconds = 1f / performance.ServiceRatePerSecond;
-        return places + "  •  " + (performance.Utilization * 100f).ToString("0")
-            + "% speed  •  " + seconds.ToString("0.0") + "s/unit/place"
-            + (performance.EnergyBoosted ? " (boosted)" : string.Empty);
-    }
-
-    private string StatusText(ResortNeed need)
-    {
-        foreach (WaveNeedSnapshot snapshot in snapshots)
-        {
-            if (snapshot.Need != need) continue;
-            if (snapshot.Status == WaveNeedStatus.Bottleneck) return "  •  Bottleneck";
-            if (snapshot.Status == WaveNeedStatus.Recovering) return "  •  Recovering";
-            break;
-        }
-        return string.Empty;
-    }
-
-    private void TryTransferFrom(ResortNeed need)
-    {
-        if (controller == null || controller.CurrentState == GuestWaveState.Paused) return;
-        CollectAvailableBuildings();
-        BuildingSlot source = FindAvailable(need);
-        BuildingSlot destination = null;
-        int unstaffedCount = 0;
         foreach (BuildingSlot building in available)
-            if (!building.HasWorker) { destination = building; unstaffedCount++; }
+            if (building.BuildingKey == key) return building;
+        return null;
+    }
 
-        if (duplicateBuilding || unstaffedCount != 1 || source == null || !source.HasWorker
-            || (controller.CurrentState != GuestWaveState.Ready
-                && controller.CurrentState != GuestWaveState.Active
-                && controller.CurrentState != GuestWaveState.Resolving))
+    private void SelectSource(ResortNeed need)
+    {
+        selectedSourceNeed = need;
+        resultMessage = null;
+        TryTransferSelectedWorker();
+    }
+
+    private void TryTransferSelectedWorker()
+    {
+        if (controller == null || !selectedSourceNeed.HasValue) return;
+        CollectAvailableBuildings();
+        BuildingSlot target = ResolveDestination();
+        BuildingSlot source = FindAvailable(selectedSourceNeed.Value);
+        bool allowed = controller.CurrentState == GuestWaveState.Ready
+            || controller.CurrentState == GuestWaveState.Active
+            || controller.CurrentState == GuestWaveState.Resolving;
+        int unstaffedCount = 0;
+        foreach (BuildingSlot building in available) if (!building.HasWorker) unstaffedCount++;
+        if (duplicateBuilding || unstaffedCount != 1 || !allowed || target == null || target.HasWorker
+            || source == null || !source.HasWorker || !source.TryMoveWorkerTo(target))
         {
-            resultMessage = "Transfer unavailable. Check the current staffing and wave state.";
+            resultMessage = "Worker movement is unavailable. Check the selected building and wave state.";
             Refresh();
             return;
         }
 
         string sourceName = DisplayName(source);
-        string destinationName = DisplayName(destination);
-        if (!source.TryMoveWorkerTo(destination))
-        {
-            resultMessage = "Transfer failed. Saved assignments may have changed.";
-            Refresh();
-            return;
-        }
-
+        string destinationName = DisplayName(target);
         source.GetComponent<BuildingWorkerIndicator>()?.RefreshFromSave();
-        destination.GetComponent<BuildingWorkerIndicator>()?.RefreshFromSave();
-        resultMessage = destinationName + " faster; " + sourceName + " slower. Worker transferred.";
+        target.GetComponent<BuildingWorkerIndicator>()?.RefreshFromSave();
+        selectedSourceNeed = null;
+        requestedBuildingKey = null;
+        resultMessage = destinationName + " is staffed. " + sourceName + " will run unstaffed.";
         Refresh();
     }
 
-    private void HandleStateChanged(GuestWaveState _) => Refresh();
-    private void HandlePerformanceChanged(ServicePerformance _) => Refresh();
-    private void HandleNeedStatusChanged(ResortNeed _, WaveNeedStatus __, int ___) => Refresh();
+    private void TryUpgradeFocusedBuilding()
+    {
+        CollectAvailableBuildings();
+        BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
+            ? FindByKey(requestedBuildingKey)
+            : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : ResolveDestination();
+        if (target == null || !target.TryPurchaseUpgrade())
+        {
+            resultMessage = "Upgrade unavailable. Check the Coin balance and current building level.";
+            Refresh();
+            return;
+        }
+        resultMessage = DisplayName(target) + " upgraded. More guests can be served at the same time.";
+        Refresh();
+    }
+
+    private void HandleStateChanged(GuestWaveState _) => Refresh(false);
+    private void HandlePerformanceChanged(ServicePerformance _) => Refresh(false);
+    private void HandleNeedStateChanged(WaveNeedSnapshot snapshot)
+    {
+        for (int i = 0; i < snapshots.Count; i++)
+        {
+            if (snapshots[i].Need != snapshot.Need) continue;
+            snapshots[i] = snapshot;
+            break;
+        }
+        if (!sourceCards.TryGetValue(snapshot.Need, out SourceCard card) || !card.Button.gameObject.activeSelf)
+            return;
+        BuildingSlot source = FindAvailable(snapshot.Need);
+        if (source == null) return;
+        card.Ring.SetState(controller.GetConfiguredServicePlacesForLevel(source.Level),
+            snapshot.Processing, snapshot.Status == WaveNeedStatus.Bottleneck);
+        if (sourceBaseDetails.TryGetValue(snapshot.Need, out string details))
+            card.Detail.text = details;
+        card.Name.text = DisplayName(source) + StatusText(snapshot.Need);
+        card.Background.color = snapshot.Status == WaveNeedStatus.Bottleneck
+            ? new Color(0.40f, 0.22f, 0.20f, 0.98f)
+            : new Color(0.12f, 0.32f, 0.27f, 0.98f);
+    }
+    private void HandleBuildingUpgraded(BuildingUpgradeInfo _) => Refresh();
 
     private static string DisplayName(BuildingSlot building)
     {
@@ -350,22 +487,32 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         }
     }
 
+    private static ResortNeed NeedForKey(string key) =>
+        TryNeedForKey(key, out ResortNeed need) ? need : default;
+
+    private static Button CreateButton(string objectName, RectTransform panel, Vector2 position,
+        Vector2 size, out TMP_Text label)
+    {
+        GameObject buttonObject = new GameObject(objectName,
+            typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button));
+        RectTransform rect = (RectTransform)buttonObject.transform;
+        rect.SetParent(panel, false);
+        Place(rect, position, size);
+        Image image = buttonObject.GetComponent<Image>();
+        image.color = new Color(0.15f, 0.39f, 0.30f, 0.98f);
+        Button button = buttonObject.GetComponent<Button>();
+        button.transition = Selectable.Transition.ColorTint;
+        label = WaveNeedRowUI.CreateText(objectName + "Label", rect, Vector2.zero, size - new Vector2(24f, 8f),
+            19f, TextAlignmentOptions.Center);
+        label.color = Color.white;
+        return button;
+    }
+
     private static void Place(RectTransform rect, Vector2 position, Vector2 size)
     {
         rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
         rect.pivot = new Vector2(0.5f, 0.5f);
         rect.anchoredPosition = position;
         rect.sizeDelta = size;
-    }
-
-    private static Image CreateImage(string objectName, RectTransform parent, Vector2 position, Vector2 size)
-    {
-        GameObject imageObject = new GameObject(objectName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-        RectTransform rect = (RectTransform)imageObject.transform;
-        rect.SetParent(parent, false);
-        Place(rect, position, size);
-        Image image = imageObject.GetComponent<Image>();
-        image.raycastTarget = false; // The full row remains the touch target.
-        return image;
     }
 }
