@@ -172,7 +172,8 @@ public class GuestWaveTester : MonoBehaviour
 
         // This Editor-only setup satisfies the real wave and coin gates. The following
         // purchase action still uses BuildingSlot.TryPurchaseUnlock and the production transaction.
-        debugDatabase.RecordWaveCompletion(DebugPlayerId, 3, 0);
+        debugDatabase.RecordWaveCompletionOnce(DebugPlayerId, 3, 1, 0, 0,
+            Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         debugDatabase.AddCurrency(DebugPlayerId, "COINS", cost, "DEV_TEST_POOL_PURCHASE_GRANT");
         lastDebugAction = $"Pool purchase test ready: Wave 3 gate set and +{cost} test Coins granted. Press P to purchase.";
         Debug.Log(lastDebugAction, this);

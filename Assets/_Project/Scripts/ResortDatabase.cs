@@ -131,6 +131,10 @@ public class ResortDatabase : IDisposable
             "INSERT OR IGNORE INTO CURRENCY_BALANCE (player_id, currency_code, amount) SELECT player_id, 'ENERGY', 0 FROM PLAYER",
             "UPDATE BUILDING_STATE SET need_key = (SELECT need_key FROM BUILDING_DEFINITION WHERE building_key = BUILDING_STATE.building_key) WHERE need_key IS NULL"
         },
+        new[] {
+            "ALTER TABLE WAVE_RUN ADD COLUMN completion_token TEXT",
+            "CREATE UNIQUE INDEX ux_wave_run_completion_token ON WAVE_RUN(completion_token) WHERE completion_token IS NOT NULL"
+        },
     };
 
     private void Migrate()
@@ -164,7 +168,7 @@ public class ResortDatabase : IDisposable
                        1, initial_workers, worker_slots FROM BUILDING_DEFINITION", playerId);
         });
     }
-    
+
     public int GetCurrencyAmount(string playerId, string currencyCode)
     {
         return db.ExecuteScalar<int>(
@@ -203,18 +207,53 @@ public class ResortDatabase : IDisposable
         });
     }
 
-    public void RecordWaveCompletion(string playerId, int waveNumber, int coinReward)
+    /// <summary>
+    /// Commits one completed wave and its currency rewards atomically. The unique
+    /// completion token makes retries/reopening the same result idempotent, while a
+    /// replayed wave can use a fresh token and receive a new reward.
+    /// </summary>
+    public bool RecordWaveCompletionOnce(string playerId, int waveNumber, int rating,
+        int coinReward, int energyReward, string completionToken, long startedAtUnixSeconds)
     {
         if (waveNumber < 1) throw new ArgumentOutOfRangeException(nameof(waveNumber));
+        if (rating < 1 || rating > 6) throw new ArgumentOutOfRangeException(nameof(rating));
         if (coinReward < 0) throw new ArgumentOutOfRangeException(nameof(coinReward));
+        if (energyReward < 0) throw new ArgumentOutOfRangeException(nameof(energyReward));
+        if (string.IsNullOrWhiteSpace(completionToken))
+            throw new ArgumentException("A wave completion token is required.", nameof(completionToken));
+
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        bool recorded = false;
         db.RunInTransaction(() =>
         {
+            int inserted = db.Execute(@"INSERT OR IGNORE INTO WAVE_RUN
+                (player_id, wave_number, status, arrival_closed, rating, coins_awarded, energy_awarded,
+                 completion_token, started_at, completed_at)
+                VALUES (?, ?, 'COMPLETE', 1, ?, ?, ?, ?, ?, ?)",
+                playerId, waveNumber, rating, coinReward, energyReward, completionToken,
+                startedAtUnixSeconds, now);
+            if (inserted != 1) return;
+
+            long waveRunId = db.ExecuteScalar<long>("SELECT last_insert_rowid();");
             db.Execute("UPDATE PLAYER SET highest_wave_completed = MAX(highest_wave_completed, ?) WHERE player_id = ?", waveNumber, playerId);
-            db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'COINS'", coinReward, playerId);
+            db.Execute("INSERT OR IGNORE INTO CURRENCY_BALANCE (player_id, currency_code, amount) VALUES (?, 'COINS', 0)", playerId);
+            db.Execute("INSERT OR IGNORE INTO CURRENCY_BALANCE (player_id, currency_code, amount) VALUES (?, 'ENERGY', 0)", playerId);
+
             if (coinReward > 0)
-                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, created_at) VALUES (?, 'COINS', ?, 'WAVE_REWARD', ?)", playerId, coinReward, now);
+            {
+                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'COINS'", coinReward, playerId);
+                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'COINS', ?, 'WAVE_REWARD', ?, ?)", playerId, coinReward, waveRunId, now);
+            }
+
+            if (energyReward > 0)
+            {
+                db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount + ? WHERE player_id = ? AND currency_code = 'ENERGY'", energyReward, playerId);
+                db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, wave_run_id, created_at) VALUES (?, 'ENERGY', ?, 'WAVE_ENERGY_REWARD', ?, ?)", playerId, energyReward, waveRunId, now);
+            }
+
+            recorded = true;
         });
+        return recorded;
     }
 
     public bool MoveWorker(string playerId, string fromBuildingKey, string toBuildingKey)
@@ -285,8 +324,10 @@ public class ResortDatabase : IDisposable
             int level = db.ExecuteScalar<int>("SELECT level FROM BUILDING_STATE WHERE player_id = ? AND building_key = ? AND is_unlocked = 1", playerId, buildingKey);
             if (level < 1 || level >= 3) return;
             int changed = db.Execute("UPDATE CURRENCY_BALANCE SET amount = amount - ? WHERE player_id = ? AND currency_code = 'COINS' AND amount >= ?", coinCost, playerId, coinCost);
-            if (changed == 0 && coinCost > 0) return;
-            db.Execute("UPDATE BUILDING_STATE SET level = level + 1 WHERE player_id = ? AND building_key = ?", playerId, buildingKey);
+            if (changed != 1) return;
+            int levelChanged = db.Execute("UPDATE BUILDING_STATE SET level = level + 1 WHERE player_id = ? AND building_key = ? AND is_unlocked = 1 AND level = ? AND level < 3", playerId, buildingKey, level);
+            if (levelChanged != 1)
+                throw new InvalidOperationException("Building level changed during upgrade transaction.");
             if (coinCost > 0)
                 db.Execute("INSERT INTO CURRENCY_LEDGER (player_id, currency_code, delta, reason, created_at) VALUES (?, 'COINS', ?, 'BUILDING_UPGRADE', ?)", playerId, -coinCost, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             upgraded = true;

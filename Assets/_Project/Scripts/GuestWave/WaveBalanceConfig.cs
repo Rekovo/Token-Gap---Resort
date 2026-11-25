@@ -16,6 +16,9 @@ public sealed class WaveBalanceConfig : ScriptableObject
     [SerializeField, Range(0.05f, 1f)] private float utilizationStaffed = 1f;
     [SerializeField, Range(0.05f, 0.6f)] private float utilizationEmpty = 0.33f;
     [SerializeField] private int[] capacityPerLevel = { 3, 5, 7 };
+    [Header("Building upgrades")]
+    [Tooltip("Coin cost indexed by target building level: Level 2, then Level 3.")]
+    [SerializeField, Min(0)] private int[] upgradeCostsByTargetLevel = { 500, 1200 };
     [Header("Bottleneck")]
     [SerializeField, Min(1)] private int bottleneckThreshold = 4;
     [SerializeField, Min(0f)] private float bottleneckHysteresisSeconds = 3f;
@@ -33,6 +36,9 @@ public sealed class WaveBalanceConfig : ScriptableObject
     [Header("Rewards")]
     [SerializeField, Min(0)] private int coinsPerUnit = 16;
     [SerializeField] private float[] coinsRatingMultipliers = { 0.4f, 0.6f, 0.8f, 1f, 1.2f, 1.3f };
+    [Header("Energy wave rewards")]
+    [Tooltip("TEAM ASSUMPTION: the Build Document lists five Energy reward values for six rating outcomes. This provisional six-rating mapping follows the current team-approved ticket values.")]
+    [SerializeField] private int[] energyRewardsByRating = { 0, 1, 2, 3, 5, 5 };
 
     public float WaveTimer => waveTimer;
     public WaveDefinition GetWaveDefinition(int waveNumber)
@@ -69,6 +75,17 @@ public sealed class WaveBalanceConfig : ScriptableObject
     public float EnergySpeedReduction => energySpeedReduction;
     public float EnergyBoostDuration => energyBoostDuration;
     public int CoinsPerUnit => coinsPerUnit;
+    public int BuildingUpgradeCost(int targetLevel)
+    {
+        if (targetLevel < 2 || targetLevel > 3 || upgradeCostsByTargetLevel == null
+            || upgradeCostsByTargetLevel.Length != 2) return -1;
+        return upgradeCostsByTargetLevel[targetLevel - 2];
+    }
+    public int EnergyRewardForRating(int rating)
+    {
+        if (energyRewardsByRating == null || energyRewardsByRating.Length != 6) return 0;
+        return energyRewardsByRating[Mathf.Clamp(rating - 1, 0, 5)];
+    }
     public int CapacityForLevel(int level) => capacityPerLevel[Mathf.Clamp(level - 1, 0, capacityPerLevel.Length - 1)];
     public float RatingThreshold(int index) => ratingThresholds[Mathf.Clamp(index, 0, ratingThresholds.Length - 1)];
     public float CoinsRatingMultiplier(int index) => coinsRatingMultipliers[Mathf.Clamp(index, 0, coinsRatingMultipliers.Length - 1)];
@@ -82,8 +99,12 @@ public sealed class WaveBalanceConfig : ScriptableObject
                 if (scriptedWaves[i] == null || scriptedWaves[i].WaveNumber != i + 1)
                     Debug.LogError($"Scripted wave slot {i + 1} must reference Wave {i + 1}.", this);
 
-        if (capacityPerLevel == null || capacityPerLevel.Length != 3 || capacityPerLevel[0] <= 0 || capacityPerLevel[1] <= capacityPerLevel[0] || capacityPerLevel[2] <= capacityPerLevel[1])
-            Debug.LogError("Prototype capacity must contain three increasing positive levels (3, 5, 7).", this);
+        if (capacityPerLevel == null || capacityPerLevel.Length != 3 || capacityPerLevel[0] != 3
+            || capacityPerLevel[1] != 5 || capacityPerLevel[2] != 7)
+            Debug.LogError("Prototype building capacities must be 3, 5, and 7 service places for levels 1, 2, and 3.", this);
+        if (upgradeCostsByTargetLevel == null || upgradeCostsByTargetLevel.Length != 2
+            || upgradeCostsByTargetLevel[0] < 0 || upgradeCostsByTargetLevel[1] < 0)
+            Debug.LogError("Building upgrade costs must configure non-negative costs for target levels 2 and 3.", this);
         if (ratingThresholds == null || ratingThresholds.Length != 6 || coinsRatingMultipliers == null || coinsRatingMultipliers.Length != 6)
             Debug.LogError("Rating thresholds and reward multipliers must each have six entries.", this);
         else
@@ -98,6 +119,11 @@ public sealed class WaveBalanceConfig : ScriptableObject
         }
         if (patienceFloorAfter <= patienceGrace)
             Debug.LogError("patienceFloorAfter must be greater than patienceGrace.", this);
+        if (energyRewardsByRating == null || energyRewardsByRating.Length != 6)
+            Debug.LogError("The provisional Energy reward mapping must contain one non-negative value for each of the six ratings.", this);
+        else
+            foreach (int reward in energyRewardsByRating)
+                if (reward < 0) Debug.LogError("Energy wave rewards cannot be negative.", this);
         if (utilizationEmpty <= 0f)
             Debug.LogError("WR2 violated: utilizationEmpty must be greater than zero.", this);
         if (utilizationStaffed <= 0f)
