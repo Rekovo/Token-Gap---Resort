@@ -97,19 +97,23 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
 
         buildingTitle = WaveNeedRowUI.CreateText("SelectedBuilding", panel, new Vector2(0f, 311f),
             new Vector2(820f, 36f), 30f, TextAlignmentOptions.Center);
+        FitSingleLine(buildingTitle, 26f);
         workforceTotal = WaveNeedRowUI.CreateText("WorkforceTotal", panel, new Vector2(0f, 349f),
             new Vector2(820f, 28f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(workforceTotal, 18f);
         buildingDetails = WaveNeedRowUI.CreateText("BuildingDetails", panel, new Vector2(0f, 275f),
             new Vector2(820f, 32f), 22f, TextAlignmentOptions.Center);
+        FitSingleLine(buildingDetails, 19f);
         workerState = WaveNeedRowUI.CreateText("CurrentWorkerState", panel, new Vector2(0f, 243f),
             new Vector2(820f, 30f), 22f, TextAlignmentOptions.Center);
+        FitSingleLine(workerState, 20f);
         workerState.color = new Color(1f, 0.79f, 0.48f);
 
         GameObject previewObject = new GameObject("UpgradePreview", typeof(RectTransform),
             typeof(CanvasRenderer), typeof(Image));
         RectTransform previewRect = (RectTransform)previewObject.transform;
         previewRect.SetParent(panel, false);
-        Place(previewRect, new Vector2(0f, 122f), new Vector2(820f, 204f));
+        Place(previewRect, new Vector2(0f, 121f), new Vector2(820f, 206f));
         upgradeBackground = previewObject.GetComponent<Image>();
         upgradeBackground.color = new Color(0.14f, 0.35f, 0.29f, 0.98f);
         upgradeBackground.raycastTarget = false;
@@ -117,19 +121,24 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             new Vector2(780f, 24f), 21f, TextAlignmentOptions.Center);
         previewHeading.text = "UPGRADE PREVIEW";
         previewHeading.color = new Color(0.78f, 0.93f, 0.86f);
-        upgradeCapacity = WaveNeedRowUI.CreateText("UpgradeCapacity", previewRect, new Vector2(0f, 47f),
+        upgradeCapacity = WaveNeedRowUI.CreateText("UpgradeCapacity", previewRect, new Vector2(0f, 52f),
             new Vector2(780f, 34f), 30f, TextAlignmentOptions.Center);
-        upgradeAction = WaveNeedRowUI.CreateText("UpgradeBenefit", previewRect, new Vector2(0f, 15f),
+        FitSingleLine(upgradeCapacity, 26f);
+        upgradeAction = WaveNeedRowUI.CreateText("UpgradeBenefit", previewRect, new Vector2(0f, 18f),
             new Vector2(780f, 30f), 22f, TextAlignmentOptions.Center);
-        upgradeHint = WaveNeedRowUI.CreateText("UpgradeHistory", previewRect, new Vector2(0f, -15f),
-            new Vector2(780f, 26f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeAction, 20f);
+        upgradeHint = WaveNeedRowUI.CreateText("UpgradeHistory", previewRect, new Vector2(0f, -11f),
+            new Vector2(780f, 24f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeHint, 18f);
         upgradeHint.color = new Color(1f, 0.83f, 0.58f);
-        upgradeMissing = WaveNeedRowUI.CreateText("UpgradeMissing", previewRect, new Vector2(0f, -39f),
+        upgradeMissing = WaveNeedRowUI.CreateText("UpgradeMissing", previewRect, new Vector2(0f, -36f),
             new Vector2(780f, 22f), 21f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeMissing, 19f);
         upgradeMissing.color = new Color(1f, 0.72f, 0.53f);
         upgradeButton = CreateButton("BuildingUpgradeButton", panel, new Vector2(0f, 45f),
-            new Vector2(780f, 48f), out upgradeButtonText);
+            new Vector2(780f, 52f), out upgradeButtonText);
         upgradeButtonText.fontSize = 23f;
+        FitSingleLine(upgradeButtonText, 21f);
         upgradeButton.onClick.AddListener(TryUpgradeFocusedBuilding);
 
         sectionTitle = WaveNeedRowUI.CreateText("WorkerSourcesHeading", panel, new Vector2(0f, 2f),
@@ -141,8 +150,17 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             sourceCards.Add(WaveNeedPresentation.StableOrder[i],
                 BuildSourceCard(panel, WaveNeedPresentation.StableOrder[i], -48f - i * 69f));
 
-        messageText = WaveNeedRowUI.CreateText("WorkerMessage", panel, new Vector2(0f, -306f),
-            new Vector2(820f, 34f), 19f, TextAlignmentOptions.Center);
+        GameObject messageObject = new GameObject("WorkerMessageBackground", typeof(RectTransform),
+            typeof(CanvasRenderer), typeof(Image));
+        RectTransform messageRect = (RectTransform)messageObject.transform;
+        messageRect.SetParent(panel, false);
+        Place(messageRect, new Vector2(0f, -307f), new Vector2(820f, 36f));
+        Image messageBackground = messageObject.GetComponent<Image>();
+        messageBackground.color = new Color(0.08f, 0.19f, 0.17f, 0.98f);
+        messageBackground.raycastTarget = false;
+        messageText = WaveNeedRowUI.CreateText("WorkerMessage", messageRect, Vector2.zero,
+            new Vector2(790f, 32f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(messageText, 18f);
         messageText.color = new Color(0.91f, 0.96f, 0.92f);
     }
 
@@ -297,6 +315,7 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             upgradeMissing.text = string.Empty;
             upgradeButton.interactable = false;
             upgradeButtonText.text = "MAX LEVEL  •  " + currentCapacity + " PLACES";
+            upgradeButtonText.color = new Color(0.84f, 0.89f, 0.86f);
             return;
         }
 
@@ -315,6 +334,7 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         upgradeMissing.text = missing;
         upgradeButton.interactable = canAfford;
         upgradeButtonText.text = "UPGRADE  •  " + cost + " COINS";
+        upgradeButtonText.color = canAfford ? Color.white : new Color(0.84f, 0.89f, 0.86f);
     }
 
     private string UpgradeBottleneckHint(string buildingKey)
@@ -596,10 +616,25 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         image.color = new Color(0.15f, 0.39f, 0.30f, 0.98f);
         Button button = buttonObject.GetComponent<Button>();
         button.transition = Selectable.Transition.ColorTint;
+        ColorBlock colors = button.colors;
+        colors.normalColor = Color.white;
+        colors.highlightedColor = new Color(1f, 1f, 0.88f, 1f);
+        colors.pressedColor = new Color(0.72f, 0.86f, 0.76f, 1f);
+        colors.disabledColor = new Color(0.74f, 0.79f, 0.76f, 1f);
+        button.colors = colors;
         label = WaveNeedRowUI.CreateText(objectName + "Label", rect, Vector2.zero, size - new Vector2(24f, 8f),
             19f, TextAlignmentOptions.Center);
         label.color = Color.white;
         return button;
+    }
+
+    private static void FitSingleLine(TMP_Text label, float minimumSize)
+    {
+        label.fontSizeMin = minimumSize;
+        label.fontSizeMax = label.fontSize;
+        label.enableAutoSizing = true;
+        label.textWrappingMode = TextWrappingModes.NoWrap;
+        label.overflowMode = TextOverflowModes.Ellipsis;
     }
 
     private static void Place(RectTransform rect, Vector2 position, Vector2 size)
