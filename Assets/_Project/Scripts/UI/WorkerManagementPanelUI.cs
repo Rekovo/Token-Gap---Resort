@@ -40,6 +40,8 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
     private string resultMessage;
     private SavedWaveResult lastSavedWave;
     private bool duplicateBuilding;
+    private bool upgradePurchaseInProgress;
+    private float nextUpgradePressTime;
 
     public void Initialize(GuestWaveController waveController) => controller = waveController;
 
@@ -470,18 +472,55 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
 
     private void TryUpgradeFocusedBuilding()
     {
-        CollectAvailableBuildings();
-        BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
-            ? FindByKey(requestedBuildingKey)
-            : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : ResolveDestination();
-        if (target == null || !target.TryPurchaseUpgrade())
+        if (upgradePurchaseInProgress || Time.unscaledTime < nextUpgradePressTime) return;
+        upgradePurchaseInProgress = true;
+        upgradeButton.interactable = false;
+        try
         {
-            resultMessage = "Upgrade unavailable. Check the Coin balance and current building level.";
-            Refresh();
-            return;
+            CollectAvailableBuildings();
+            BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
+                ? FindByKey(requestedBuildingKey)
+                : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : ResolveDestination();
+            if (target == null)
+                resultMessage = "Selected building is unavailable.";
+            else if (controller.CurrentState != GuestWaveState.Ready
+                && controller.CurrentState != GuestWaveState.Completed)
+                resultMessage = "Upgrades are unavailable during this wave phase.";
+            else if (target.Level >= 3)
+                resultMessage = DisplayName(target) + " is already at maximum level.";
+            else
+            {
+                int cost = controller.GetBuildingUpgradeCost(target.BuildingKey);
+                if (cost >= 0 && controller.CurrentCoins < cost)
+                    resultMessage = "Missing: " + (cost - controller.CurrentCoins) + " Coins";
+                else
+                {
+                    int previousCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level);
+                    if (target.TryPurchaseUpgrade())
+                    {
+                        target.RefreshPersistedState();
+                        int capacity = controller.TryGetServicePlaces(NeedForKey(target.BuildingKey),
+                            out int savedCapacity) ? savedCapacity
+                            : controller.GetConfiguredServicePlacesForLevel(target.Level);
+                        resultMessage = DisplayName(target) + " upgraded to Level " + target.Level
+                            + ". Capacity increased from " + previousCapacity + " to " + capacity + " places.";
+                        nextUpgradePressTime = Time.unscaledTime + 0.4f;
+                    }
+                    else
+                        resultMessage = "Purchase failed. Please try again.";
+                }
+            }
         }
-        resultMessage = DisplayName(target) + " upgraded. More guests can be served at the same time.";
-        Refresh();
+        catch (System.Exception error)
+        {
+            Debug.LogError("Building upgrade failed: " + error, this);
+            resultMessage = "Purchase failed. Please try again.";
+        }
+        finally
+        {
+            upgradePurchaseInProgress = false;
+            Refresh();
+        }
     }
 
     private void HandleStateChanged(GuestWaveState _) => Refresh(false);
@@ -507,7 +546,10 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             ? new Color(0.40f, 0.22f, 0.20f, 0.98f)
             : new Color(0.12f, 0.32f, 0.27f, 0.98f);
     }
-    private void HandleBuildingUpgraded(BuildingUpgradeInfo _) => Refresh();
+    private void HandleBuildingUpgraded(BuildingUpgradeInfo _)
+    {
+        if (!upgradePurchaseInProgress) Refresh();
+    }
 
     private static string DisplayName(BuildingSlot building)
     {

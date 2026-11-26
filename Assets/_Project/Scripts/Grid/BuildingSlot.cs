@@ -52,6 +52,16 @@ public class BuildingSlot : MonoBehaviour
             return;
         }
 
+        // Placeholder service prefabs such as Pool and Bungalows have no physics target.
+        // Use their existing grid footprint so island taps can select them without asset edits.
+        if (GetComponentInChildren<Collider>(true) == null)
+        {
+            BoxCollider selection = gameObject.AddComponent<BoxCollider>();
+            selection.center = Vector3.up * 0.5f;
+            selection.size = new Vector3(footprint.x * grid.CellSize, 1f,
+                footprint.y * grid.CellSize);
+        }
+
         Vector3 bottomLeftCentre = transform.position
             - new Vector3(footprint.x - 1, 0, footprint.y - 1) * 0.5f * grid.CellSize;
         Origin = grid.WorldToCell(bottomLeftCentre);
