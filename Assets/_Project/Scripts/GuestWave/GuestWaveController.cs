@@ -234,6 +234,17 @@ public class GuestWaveController : MonoBehaviour
     public int GetConfiguredServicePlacesForLevel(int level) =>
         balanceConfig != null ? balanceConfig.CapacityForLevel(level) : 0;
 
+    /// <summary>Read-only saved level for result recommendations; locked services are excluded.</summary>
+    public bool TryGetUnlockedServiceLevel(ResortNeed need, out int level)
+    {
+        level = 0;
+        if (database == null) return false;
+        BuildingStateRecord state = database.GetBuildingState(playerId, BuildingKeyFor(need));
+        if (state == null || state.is_unlocked != 1 || state.level < 1) return false;
+        level = state.level;
+        return true;
+    }
+
     public bool CanBoost(ResortNeed need)
     {
         if ((CurrentState != GuestWaveState.Active && CurrentState != GuestWaveState.Resolving)

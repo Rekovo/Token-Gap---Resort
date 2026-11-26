@@ -13,32 +13,44 @@ public class UIManager : MonoBehaviour
     private WaveNeedsPanelUI waveNeeds;
     private TapSelector tapSelector;
     private GameObject workersReturnPanel;
+    private GuestWaveController waveController;
+    private WaveResultsPanelUI resultsPanel;
+    private string shownCompletionToken;
 
     public bool IsAnyMenuOpen => buildMenuPanel.activeSelf || workersMenuPanel.activeSelf
         || (guestsMenuPanel.activeSelf && (waveNeeds == null || waveNeeds.BlocksIslandInput))
-        || settingsPanel.activeSelf;
+        || settingsPanel.activeSelf || (resultsPanel != null && resultsPanel.IsShowing);
 
     private void Awake()
     {
         workerManagement = workersMenuPanel.GetComponent<WorkerManagementPanelUI>();
         if (workerManagement == null) workerManagement = workersMenuPanel.AddComponent<WorkerManagementPanelUI>();
-        workerManagement.Initialize(FindAnyObjectByType<GuestWaveController>());
+        waveController = FindAnyObjectByType<GuestWaveController>();
+        workerManagement.Initialize(waveController);
 
         waveNeeds = guestsMenuPanel.GetComponent<WaveNeedsPanelUI>();
         if (waveNeeds != null) waveNeeds.SetManagementOpener(OpenWorkersForNeed);
         tapSelector = FindAnyObjectByType<TapSelector>();
+        GameObject overlay = new GameObject("WaveResultsOverlay", typeof(RectTransform),
+            typeof(CanvasRenderer), typeof(UnityEngine.UI.Image));
+        overlay.SetActive(false);
+        overlay.transform.SetParent(workersMenuPanel.transform.parent, false);
+        resultsPanel = overlay.AddComponent<WaveResultsPanelUI>();
+        resultsPanel.Initialize(waveController, ContinueAfterResults);
     }
 
     private void Start()
     {
         CloseAllMenus();
         if (tapSelector != null) tapSelector.BuildingTapped += OpenWorkersForBuilding;
+        if (waveController != null) waveController.OnDetailedWaveResult += ShowWaveResults;
     }
 
     private void OnDestroy()
     {
         if (tapSelector != null) tapSelector.BuildingTapped -= OpenWorkersForBuilding;
         if (waveNeeds != null) waveNeeds.SetManagementOpener(null);
+        if (waveController != null) waveController.OnDetailedWaveResult -= ShowWaveResults;
     }
 
     public void CloseAllMenus()
@@ -118,5 +130,24 @@ public class UIManager : MonoBehaviour
     public void OpenSettingsMenu()
     {
         OpenMenu(settingsPanel);
+    }
+
+    private void ShowWaveResults(WaveCompletionResult result)
+    {
+        if (result == null || string.IsNullOrEmpty(result.CompletionToken)
+            || result.CompletionToken == shownCompletionToken) return;
+        SavedWaveResult saved = null;
+        try { saved = waveController.GetSavedWaveResult(result.CompletionToken); }
+        catch (System.Exception error) { Debug.LogWarning("Saved wave result could not be read: " + error, this); }
+        resultsPanel.Show(result, saved);
+        shownCompletionToken = result.CompletionToken;
+    }
+
+    private void ContinueAfterResults()
+    {
+        if (resultsPanel == null || !resultsPanel.IsShowing) return;
+        resultsPanel.Hide();
+        CloseAllMenus();
+        waveController?.PrepareNextWave();
     }
 }
