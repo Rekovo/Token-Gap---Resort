@@ -34,11 +34,16 @@ public class GuestWaveUI : MonoBehaviour
 
     private void HandleWaveChanged(int _) => UpdateWaveUI();
     private void HandleWaveChanged() => UpdateWaveUI();
-    private void HandleWaveStateChanged(GuestWaveState _) => UpdateWaveUI();
+    private void HandleWaveStateChanged(GuestWaveState state)
+    {
+        if (state == GuestWaveState.Ready && waveResultText != null)
+            waveResultText.text = string.Empty;
+        UpdateWaveUI();
+    }
     private void HandleWaveResult(float satisfaction, int rating, int coins)
     {
         if (waveResultText != null)
-            waveResultText.text = $"Guests served · {(rating == 6 ? "Perfect" : rating + "★")} · {satisfaction:P0} · +{coins} Coins";
+            waveResultText.text = $"Guests served · {(rating == 6 ? "Perfect Stay" : rating + " stars")} · {satisfaction:P0} · +{coins} Coins";
         UpdateWaveUI();
     }
 

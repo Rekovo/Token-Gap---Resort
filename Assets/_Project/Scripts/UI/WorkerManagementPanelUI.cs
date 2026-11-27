@@ -27,14 +27,21 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
     private TMP_Text workerState;
     private TMP_Text sectionTitle;
     private TMP_Text messageText;
+    private Image upgradeBackground;
+    private TMP_Text upgradeCapacity;
     private TMP_Text upgradeAction;
+    private TMP_Text upgradeHint;
+    private TMP_Text upgradeMissing;
     private Button upgradeButton;
     private TMP_Text upgradeButtonText;
     private ResortNeed? destinationNeed;
     private ResortNeed? selectedSourceNeed;
     private string requestedBuildingKey;
     private string resultMessage;
+    private SavedWaveResult lastSavedWave;
     private bool duplicateBuilding;
+    private bool upgradePurchaseInProgress;
+    private float nextUpgradePressTime;
 
     public void Initialize(GuestWaveController waveController) => controller = waveController;
 
@@ -82,37 +89,78 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
     private void BuildUI()
     {
         RectTransform panel = (RectTransform)transform;
-        panel.sizeDelta = new Vector2(900f, 760f);
+        panel.sizeDelta = new Vector2(900f, 900f);
+        RectTransform menuTitle = panel.Find("MenuTitle") as RectTransform;
+        if (menuTitle != null) menuTitle.anchoredPosition = new Vector2(menuTitle.anchoredPosition.x, -40f);
         Image panelBackground = GetComponent<Image>();
         if (panelBackground != null) panelBackground.color = new Color(0.10f, 0.23f, 0.20f, 0.985f);
 
-        buildingTitle = WaveNeedRowUI.CreateText("SelectedBuilding", panel, new Vector2(0f, 268f),
-            new Vector2(820f, 40f), 30f, TextAlignmentOptions.Center);
-        workforceTotal = WaveNeedRowUI.CreateText("WorkforceTotal", panel, new Vector2(0f, 300f),
-            new Vector2(820f, 28f), 18f, TextAlignmentOptions.Center);
-        buildingDetails = WaveNeedRowUI.CreateText("BuildingDetails", panel, new Vector2(0f, 224f),
-            new Vector2(820f, 38f), 22f, TextAlignmentOptions.Center);
-        workerState = WaveNeedRowUI.CreateText("CurrentWorkerState", panel, new Vector2(0f, 185f),
-            new Vector2(820f, 34f), 22f, TextAlignmentOptions.Center);
+        buildingTitle = WaveNeedRowUI.CreateText("SelectedBuilding", panel, new Vector2(0f, 311f),
+            new Vector2(820f, 36f), 30f, TextAlignmentOptions.Center);
+        FitSingleLine(buildingTitle, 26f);
+        workforceTotal = WaveNeedRowUI.CreateText("WorkforceTotal", panel, new Vector2(0f, 349f),
+            new Vector2(820f, 28f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(workforceTotal, 18f);
+        buildingDetails = WaveNeedRowUI.CreateText("BuildingDetails", panel, new Vector2(0f, 275f),
+            new Vector2(820f, 32f), 22f, TextAlignmentOptions.Center);
+        FitSingleLine(buildingDetails, 19f);
+        workerState = WaveNeedRowUI.CreateText("CurrentWorkerState", panel, new Vector2(0f, 243f),
+            new Vector2(820f, 30f), 22f, TextAlignmentOptions.Center);
+        FitSingleLine(workerState, 20f);
         workerState.color = new Color(1f, 0.79f, 0.48f);
 
-        upgradeAction = WaveNeedRowUI.CreateText("UpgradeDetails", panel, new Vector2(0f, 148f),
-            new Vector2(820f, 28f), 18f, TextAlignmentOptions.Center);
-        upgradeButton = CreateButton("BuildingUpgradeButton", panel, new Vector2(0f, 108f),
-            new Vector2(820f, 52f), out upgradeButtonText);
+        GameObject previewObject = new GameObject("UpgradePreview", typeof(RectTransform),
+            typeof(CanvasRenderer), typeof(Image));
+        RectTransform previewRect = (RectTransform)previewObject.transform;
+        previewRect.SetParent(panel, false);
+        Place(previewRect, new Vector2(0f, 121f), new Vector2(820f, 206f));
+        upgradeBackground = previewObject.GetComponent<Image>();
+        upgradeBackground.color = new Color(0.14f, 0.35f, 0.29f, 0.98f);
+        upgradeBackground.raycastTarget = false;
+        TMP_Text previewHeading = WaveNeedRowUI.CreateText("UpgradeHeading", previewRect, new Vector2(0f, 83f),
+            new Vector2(780f, 24f), 21f, TextAlignmentOptions.Center);
+        previewHeading.text = "UPGRADE PREVIEW";
+        previewHeading.color = new Color(0.78f, 0.93f, 0.86f);
+        upgradeCapacity = WaveNeedRowUI.CreateText("UpgradeCapacity", previewRect, new Vector2(0f, 52f),
+            new Vector2(780f, 34f), 30f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeCapacity, 26f);
+        upgradeAction = WaveNeedRowUI.CreateText("UpgradeBenefit", previewRect, new Vector2(0f, 18f),
+            new Vector2(780f, 30f), 22f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeAction, 20f);
+        upgradeHint = WaveNeedRowUI.CreateText("UpgradeHistory", previewRect, new Vector2(0f, -11f),
+            new Vector2(780f, 24f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeHint, 18f);
+        upgradeHint.color = new Color(1f, 0.83f, 0.58f);
+        upgradeMissing = WaveNeedRowUI.CreateText("UpgradeMissing", previewRect, new Vector2(0f, -36f),
+            new Vector2(780f, 22f), 21f, TextAlignmentOptions.Center);
+        FitSingleLine(upgradeMissing, 19f);
+        upgradeMissing.color = new Color(1f, 0.72f, 0.53f);
+        upgradeButton = CreateButton("BuildingUpgradeButton", panel, new Vector2(0f, 45f),
+            new Vector2(780f, 52f), out upgradeButtonText);
+        upgradeButtonText.fontSize = 23f;
+        FitSingleLine(upgradeButtonText, 21f);
         upgradeButton.onClick.AddListener(TryUpgradeFocusedBuilding);
 
-        sectionTitle = WaveNeedRowUI.CreateText("WorkerSourcesHeading", panel, new Vector2(0f, 65f),
+        sectionTitle = WaveNeedRowUI.CreateText("WorkerSourcesHeading", panel, new Vector2(0f, 2f),
             new Vector2(820f, 32f), 21f, TextAlignmentOptions.MidlineLeft);
         sectionTitle.text = "AVAILABLE WORKER SOURCES";
         sectionTitle.color = new Color(0.78f, 0.93f, 0.86f);
 
         for (int i = 0; i < WaveNeedPresentation.StableOrder.Length; i++)
             sourceCards.Add(WaveNeedPresentation.StableOrder[i],
-                BuildSourceCard(panel, WaveNeedPresentation.StableOrder[i], 14f - i * 61f));
+                BuildSourceCard(panel, WaveNeedPresentation.StableOrder[i], -48f - i * 69f));
 
-        messageText = WaveNeedRowUI.CreateText("WorkerMessage", panel, new Vector2(0f, -245f),
-            new Vector2(820f, 34f), 19f, TextAlignmentOptions.Center);
+        GameObject messageObject = new GameObject("WorkerMessageBackground", typeof(RectTransform),
+            typeof(CanvasRenderer), typeof(Image));
+        RectTransform messageRect = (RectTransform)messageObject.transform;
+        messageRect.SetParent(panel, false);
+        Place(messageRect, new Vector2(0f, -307f), new Vector2(820f, 36f));
+        Image messageBackground = messageObject.GetComponent<Image>();
+        messageBackground.color = new Color(0.08f, 0.19f, 0.17f, 0.98f);
+        messageBackground.raycastTarget = false;
+        messageText = WaveNeedRowUI.CreateText("WorkerMessage", messageRect, Vector2.zero,
+            new Vector2(790f, 32f), 20f, TextAlignmentOptions.Center);
+        FitSingleLine(messageText, 18f);
         messageText.color = new Color(0.91f, 0.96f, 0.92f);
     }
 
@@ -122,7 +170,7 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Button));
         RectTransform rect = (RectTransform)cardObject.transform;
         rect.SetParent(panel, false);
-        Place(rect, new Vector2(0f, y), new Vector2(820f, 58f));
+        Place(rect, new Vector2(0f, y), new Vector2(820f, 64f));
         Image background = cardObject.GetComponent<Image>();
         Button button = cardObject.GetComponent<Button>();
         button.transition = Selectable.Transition.None;
@@ -175,6 +223,8 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         }
 
         if (reloadBuildings) CollectAvailableBuildings();
+        if (reloadBuildings || controller.CurrentState == GuestWaveState.Completed)
+            lastSavedWave = controller.GetLatestSavedWaveResult();
         controller.GetNeedSnapshots(snapshots);
         BuildingSlot destination = ResolveDestination();
         BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
@@ -252,27 +302,51 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
     private void UpdateUpgradeSection(BuildingSlot target, bool upgradePhase)
     {
         bool showUpgrade = target != null && target.IsUnlocked && upgradePhase;
-        upgradeAction.gameObject.SetActive(showUpgrade);
+        upgradeBackground.gameObject.SetActive(showUpgrade);
         upgradeButton.gameObject.SetActive(showUpgrade);
         if (!showUpgrade) return;
 
         int currentCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level);
         if (target.Level >= 3)
         {
-            upgradeAction.text = "Building capacity is at its prototype maximum.";
+            upgradeCapacity.text = currentCapacity + " SERVICE PLACES  •  MAX LEVEL";
+            upgradeAction.text = "Current prototype capacity is at its maximum.";
+            upgradeHint.text = string.Empty;
+            upgradeMissing.text = string.Empty;
             upgradeButton.interactable = false;
             upgradeButtonText.text = "MAX LEVEL  •  " + currentCapacity + " PLACES";
+            upgradeButtonText.color = new Color(0.84f, 0.89f, 0.86f);
             return;
         }
 
         int nextCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level + 1);
         int cost = controller.GetBuildingUpgradeCost(target.BuildingKey);
         bool canAfford = target.CanUpgrade;
-        upgradeAction.text = canAfford ? "A permanent capacity improvement for the next wave."
-            : "Need " + Mathf.Max(0, cost - controller.CurrentCoins) + " more Coins to upgrade.";
+        int addedPlaces = nextCapacity - currentCapacity;
+        string benefit = "Adds " + addedPlaces + " service " + (addedPlaces == 1 ? "place" : "places")
+            + ". More guests at once; speed unchanged.";
+        string history = UpgradeBottleneckHint(target.BuildingKey);
+        string missing = !canAfford && cost > controller.CurrentCoins
+            ? "Missing: " + (cost - controller.CurrentCoins) + " Coins" : string.Empty;
+        upgradeCapacity.text = currentCapacity + " → " + nextCapacity + " SERVICE PLACES";
+        upgradeAction.text = benefit;
+        upgradeHint.text = history;
+        upgradeMissing.text = missing;
         upgradeButton.interactable = canAfford;
-        upgradeButtonText.text = "UPGRADE  •  " + currentCapacity + " → " + nextCapacity
-            + " PLACES  •  " + cost + " COINS";
+        upgradeButtonText.text = "UPGRADE  •  " + cost + " COINS";
+        upgradeButtonText.color = canAfford ? Color.white : new Color(0.84f, 0.89f, 0.86f);
+    }
+
+    private string UpgradeBottleneckHint(string buildingKey)
+    {
+        if (!TryNeedForKey(buildingKey, out ResortNeed need)) return string.Empty;
+        if (lastSavedWave == null) return string.Empty;
+        string needKey = need == ResortNeed.OceanView ? "OCEAN_VIEW" : need.ToString().ToUpperInvariant();
+        foreach (SavedWaveNeedResult service in lastSavedWave.Services)
+            if (service.NeedKey == needKey && service.BottleneckSeconds > 0d)
+                return "Last wave: " + (need == ResortNeed.OceanView ? "Ocean View" : need.ToString())
+                    + " bottleneck. More places may reduce waits.";
+        return string.Empty;
     }
 
     private void UpdateSourceCards(BuildingSlot target, bool canSelectSources)
@@ -285,7 +359,7 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             bool show = source != null && source.HasWorker && source != target;
             card.Button.gameObject.SetActive(show);
             if (!show) continue;
-            ((RectTransform)card.Button.transform).anchoredPosition = new Vector2(0f, 14f - visibleIndex * 61f);
+            ((RectTransform)card.Button.transform).anchoredPosition = new Vector2(0f, -48f - visibleIndex * 69f);
             visibleIndex++;
 
             bool selected = selectedSourceNeed.HasValue && selectedSourceNeed.Value == need;
@@ -418,18 +492,55 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
 
     private void TryUpgradeFocusedBuilding()
     {
-        CollectAvailableBuildings();
-        BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
-            ? FindByKey(requestedBuildingKey)
-            : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : ResolveDestination();
-        if (target == null || !target.TryPurchaseUpgrade())
+        if (upgradePurchaseInProgress || Time.unscaledTime < nextUpgradePressTime) return;
+        upgradePurchaseInProgress = true;
+        upgradeButton.interactable = false;
+        try
         {
-            resultMessage = "Upgrade unavailable. Check the Coin balance and current building level.";
-            Refresh();
-            return;
+            CollectAvailableBuildings();
+            BuildingSlot target = !string.IsNullOrWhiteSpace(requestedBuildingKey)
+                ? FindByKey(requestedBuildingKey)
+                : destinationNeed.HasValue ? FindAvailable(destinationNeed.Value) : ResolveDestination();
+            if (target == null)
+                resultMessage = "Selected building is unavailable.";
+            else if (controller.CurrentState != GuestWaveState.Ready
+                && controller.CurrentState != GuestWaveState.Completed)
+                resultMessage = "Upgrades are unavailable during this wave phase.";
+            else if (target.Level >= 3)
+                resultMessage = DisplayName(target) + " is already at maximum level.";
+            else
+            {
+                int cost = controller.GetBuildingUpgradeCost(target.BuildingKey);
+                if (cost >= 0 && controller.CurrentCoins < cost)
+                    resultMessage = "Missing: " + (cost - controller.CurrentCoins) + " Coins";
+                else
+                {
+                    int previousCapacity = controller.GetConfiguredServicePlacesForLevel(target.Level);
+                    if (target.TryPurchaseUpgrade())
+                    {
+                        target.RefreshPersistedState();
+                        int capacity = controller.TryGetServicePlaces(NeedForKey(target.BuildingKey),
+                            out int savedCapacity) ? savedCapacity
+                            : controller.GetConfiguredServicePlacesForLevel(target.Level);
+                        resultMessage = DisplayName(target) + " upgraded to Level " + target.Level
+                            + ". Capacity increased from " + previousCapacity + " to " + capacity + " places.";
+                        nextUpgradePressTime = Time.unscaledTime + 0.4f;
+                    }
+                    else
+                        resultMessage = "Purchase failed. Please try again.";
+                }
+            }
         }
-        resultMessage = DisplayName(target) + " upgraded. More guests can be served at the same time.";
-        Refresh();
+        catch (System.Exception error)
+        {
+            Debug.LogError("Building upgrade failed: " + error, this);
+            resultMessage = "Purchase failed. Please try again.";
+        }
+        finally
+        {
+            upgradePurchaseInProgress = false;
+            Refresh();
+        }
     }
 
     private void HandleStateChanged(GuestWaveState _) => Refresh(false);
@@ -455,7 +566,10 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
             ? new Color(0.40f, 0.22f, 0.20f, 0.98f)
             : new Color(0.12f, 0.32f, 0.27f, 0.98f);
     }
-    private void HandleBuildingUpgraded(BuildingUpgradeInfo _) => Refresh();
+    private void HandleBuildingUpgraded(BuildingUpgradeInfo _)
+    {
+        if (!upgradePurchaseInProgress) Refresh();
+    }
 
     private static string DisplayName(BuildingSlot building)
     {
@@ -502,10 +616,25 @@ public sealed class WorkerManagementPanelUI : MonoBehaviour
         image.color = new Color(0.15f, 0.39f, 0.30f, 0.98f);
         Button button = buttonObject.GetComponent<Button>();
         button.transition = Selectable.Transition.ColorTint;
+        ColorBlock colors = button.colors;
+        colors.normalColor = Color.white;
+        colors.highlightedColor = new Color(1f, 1f, 0.88f, 1f);
+        colors.pressedColor = new Color(0.72f, 0.86f, 0.76f, 1f);
+        colors.disabledColor = new Color(0.74f, 0.79f, 0.76f, 1f);
+        button.colors = colors;
         label = WaveNeedRowUI.CreateText(objectName + "Label", rect, Vector2.zero, size - new Vector2(24f, 8f),
             19f, TextAlignmentOptions.Center);
         label.color = Color.white;
         return button;
+    }
+
+    private static void FitSingleLine(TMP_Text label, float minimumSize)
+    {
+        label.fontSizeMin = minimumSize;
+        label.fontSizeMax = label.fontSize;
+        label.enableAutoSizing = true;
+        label.textWrappingMode = TextWrappingModes.NoWrap;
+        label.overflowMode = TextOverflowModes.Ellipsis;
     }
 
     private static void Place(RectTransform rect, Vector2 position, Vector2 size)
